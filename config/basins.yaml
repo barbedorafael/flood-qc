@@ -1,0 +1,7 @@
+basins:
+  # IDs de bacias consideradas no ciclo.
+  selected_ids: []
+  # Subconjunto para análise estatística detalhada nos relatórios.
+  detailed_stats_ids: []
+  # Opcional: nomes amigáveis para aparecer no relatório.
+  names: {}

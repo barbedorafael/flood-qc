@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+.venv/
+venv/
+.env
+.env.*
+
+# Editors / IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Data
+data/*
+logs/
+
+# Tests / tooling
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Notebooks (não usamos, mas evita restos)
+.ipynb_checkpoints/
+
+# Builds
+build/
+dist/
+*.egg-info/
+

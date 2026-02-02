@@ -1,0 +1,13 @@
+qc:
+  rain:
+    min_mm_h: 0.0
+    max_mm_h: 120.0
+  level:
+    min_m: -2.0
+    max_m: 20.0
+    max_step_m_h: 1.5
+  flow:
+    min_m3s: 0.0
+    max_m3s: 50000.0
+  gap_fill:
+    max_gap_hours: 3
