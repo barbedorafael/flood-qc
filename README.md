@@ -24,7 +24,7 @@ Arquitetura intencionalmente enxuta:
 ## Estrutura do repositório
 
 - `src/` scripts principais da ferramenta.
-- `config/` parâmetros operacionais (sem precisar editar código).
+- `config/` parâmetros operacionais.
 - `data/spatial/` arquivos-fonte de estações (entrada).
 - `data/processed/` saídas intermediárias e prontas para uso.
   - `estacoes_nivel.csv`, `estacoes_pluv.csv`
