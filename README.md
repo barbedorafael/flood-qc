@@ -231,7 +231,7 @@ Exemplo de `basin_stats.json`:
 }
 ```
 
-## Ajustes operacionais mais comuns (agora via config)
+## Ajustes operacionais
 
 - Janela de coleta ANA: `config/default.yaml` → `ingest.request_days`.
 - Janelas de acumulado: `config/default.yaml` → `windows.accum_hours`.
