@@ -76,13 +76,13 @@ python src/fetch_data.py --event maio_2024
 python src/accumulate_interpolate.py --event maio_2024
 ```
 
-Opcional (visualização):
+visualização:
 
 ```bash
 streamlit run app.py
 ```
 
-## Configuração (sem editar código)
+## Configuração
 
 Arquivos:
 - `config/default.yaml`: padrão geral.
