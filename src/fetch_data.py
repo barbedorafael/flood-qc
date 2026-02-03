@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
+import shutil
 from typing import Iterable
 
 import pandas as pd
@@ -13,28 +13,10 @@ from config_loader import load_runtime_config, resolve_paths, resolve_path, get_
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
-PROCESSED_DIR = DATA_DIR / "processed"
 DEFAULT_STATION_FILES = [
-    PROCESSED_DIR / "estacoes_nivel.csv",
-    PROCESSED_DIR / "estacoes_pluv.csv",
+    DATA_DIR / "estacoes_nivel.csv",
+    DATA_DIR / "estacoes_pluv.csv",
 ]
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Busca dados recentes da API ANA por estação.")
-    parser.add_argument(
-        "--config-dir",
-        type=Path,
-        default=REPO_ROOT / "config",
-        help="Diretório dos arquivos YAML de configuração.",
-    )
-    parser.add_argument(
-        "--event",
-        type=str,
-        default=None,
-        help="Nome do evento (arquivo em config/events/<nome>.yaml) para modo replay.",
-    )
-    return parser.parse_args()
 
 
 def load_station_codes(station_files: list[Path]) -> list[str]:
@@ -111,26 +93,39 @@ def fetch_station_data(
     return parse_response(response.text)
 
 
+def clear_telemetry_dir(output_dir: Path) -> int:
+    """
+    Remove todos os arquivos/subpastas de telemetria no início do run.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    removed = 0
+    for item in output_dir.iterdir():
+        if item.is_dir():
+            shutil.rmtree(item)
+            removed += 1
+        else:
+            item.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 def persist_station_data(station: str, df: pd.DataFrame, output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
-    file_path = output_dir / f"{station}.parquet"
-
-    if file_path.exists():
-        existing = pd.read_parquet(file_path)
-        df = pd.concat([existing, df], ignore_index=True)
+    file_path = output_dir / f"{station}.csv"
 
     df = (
         df.sort_values("datetime")
         .drop_duplicates(["station_id", "datetime"], keep="last")
         .reset_index(drop=True)
     )
-    df.to_parquet(file_path, index=False)
+    df.to_csv(file_path, index=False, encoding="utf-8")
     return len(df)
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_runtime_config(config_dir=args.config_dir, event_name=args.event)
+def main(*, config_dir: str | Path | None = None, event_name: str | None = None) -> None:
+    resolved_config_dir = Path(config_dir) if config_dir is not None else None
+    config = load_runtime_config(config_dir=resolved_config_dir, event_name=event_name)
 
     station_files = config.get("paths", {}).get("station_files", [])
     stations = load_station_codes(resolve_paths(station_files) if station_files else DEFAULT_STATION_FILES)
@@ -141,9 +136,11 @@ def main() -> None:
     base_url = str(config.get("ingest", {}).get("ana_base_url"))
     request_days = int(config.get("ingest", {}).get("request_days", 3))
     timeout_seconds = float(config.get("ingest", {}).get("timeout_seconds", 15))
-    output_dir = resolve_path(config.get("paths", {}).get("telemetry_dir", "data/processed/telemetria"))
+    output_dir = resolve_path(config.get("paths", {}).get("telemetry_dir", "data/telemetria"))
     reference_time_utc = pd.to_datetime(config["runtime"]["reference_time_utc"]).to_pydatetime()
     include_station_details = bool(config.get("outputs", {}).get("write_station_json", True))
+    removed_entries = clear_telemetry_dir(output_dir)
+    print(f"Diretório de telemetria limpo: {output_dir} ({removed_entries} entradas removidas)")
 
     summary = {
         "step": "fetch_data",
@@ -156,6 +153,8 @@ def main() -> None:
         "stations_ok": 0,
         "stations_no_data": 0,
         "stations_error": 0,
+        "telemetry_dir": str(output_dir),
+        "telemetry_dir_removed_entries": removed_entries,
     }
     if include_station_details:
         summary["details"] = []
@@ -185,7 +184,7 @@ def main() -> None:
             continue
 
         total_records = persist_station_data(station, df, output_dir)
-        print(f"{station}: {len(df)} registros novos salvos em {output_dir / (station + '.parquet')}")
+        print(f"{station}: {len(df)} registros novos salvos em {output_dir / (station + '.csv')}")
         summary["stations_ok"] += 1
         if include_station_details:
             summary["details"].append(

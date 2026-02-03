@@ -5,7 +5,7 @@ Ferramenta em Python para **QC e preparo de dados de entrada/saída** do fluxo d
 Arquitetura intencionalmente enxuta:
 - scripts em `src/`;
 - configurações em `config/`;
-- saídas em `data/processed/`.
+- saídas em `data/`.
 
 ## O que já está implementado
 
@@ -26,9 +26,9 @@ Arquitetura intencionalmente enxuta:
 - `src/` scripts principais da ferramenta.
 - `config/` parâmetros operacionais.
 - `data/spatial/` arquivos-fonte de estações (entrada).
-- `data/processed/` saídas intermediárias e prontas para uso.
+- `data/` saídas intermediárias e prontas para uso.
   - `estacoes_nivel.csv`, `estacoes_pluv.csv`
-  - `telemetria/*.parquet`
+  - `telemetria/*.csv`
   - `accum/*.parquet`
   - `interp/*.tif`
   - `reports/<run_id>/*.json`
@@ -72,8 +72,9 @@ python src/accumulate_interpolate.py
 Para replay de evento:
 
 ```bash
-python src/fetch_data.py --event maio_2024
-python src/accumulate_interpolate.py --event maio_2024
+# ajuste o replay em config/run.yaml (mode/event_name/reference_time_utc)
+python src/fetch_data.py
+python src/accumulate_interpolate.py
 ```
 
 visualização:
@@ -111,32 +112,33 @@ run:
 
 ### 1) `src/station_inventory.py`
 
-Lê arquivos brutos de estações em `data/spatial/` e gera versões mínimas em `data/processed/`.
+Lê arquivos brutos de estações em `data/spatial/` e gera versões mínimas em `data/`.
 
 Entradas esperadas:
 - `data/spatial/EstacoesNivel.csv`
 - `data/spatial/EstacoesPluv.csv`
 
 Saídas:
-- `data/processed/estacoes_nivel.csv`
-- `data/processed/estacoes_pluv.csv`
+- `data/estacoes_nivel.csv`
+- `data/estacoes_pluv.csv`
 
 Colunas mantidas:
 - `ID`, `CODIGO`, `LAT`, `LON`, `ALT`, `NOME`
 
 ### 2) `src/fetch_data.py`
 
-Busca dados recentes na API de telemetria ANA para as estações listadas em `data/processed/estacoes_*.csv`.
+Busca dados recentes na API de telemetria ANA para as estações listadas em `data/estacoes_*.csv`.
 
 Saída por estação:
-- `data/processed/telemetria/{CODIGO}.parquet`
+- `data/telemetria/{CODIGO}.csv`
 
 Campos gerados:
 - `station_id`, `datetime`, `level`, `rain`, `flow`
 
 Observações:
 - Janela de coleta vem de `config/default.yaml` (`ingest.request_days`).
-- O script concatena com arquivo existente, ordena por tempo e remove duplicados por `station_id + datetime`.
+- O script limpa `data/telemetria/` no início do run e grava um CSV por estação.
+- Dentro de cada arquivo, os registros são ordenados por tempo e deduplicados por `station_id + datetime`.
 
 ### 3) `src/accumulate_interpolate.py`
 
@@ -148,8 +150,8 @@ Horizontes atuais:
 - 24h, 72h (3 dias), 240h (10 dias), 720h (30 dias)
 
 Saídas:
-- `data/processed/accum/{CODIGO}.parquet`
-- `data/processed/interp/accum_{horizonte}.tif`
+- `data/accum/{CODIGO}.parquet`
+- `data/interp/accum_{horizonte}.tif`
 
 Observações:
 - Resample horário com soma de chuva.
@@ -165,24 +167,24 @@ Dashboard Streamlit para inspeção rápida:
 
 ## Contrato de dados (estado atual)
 
-### `data/processed/estacoes_nivel.csv` e `data/processed/estacoes_pluv.csv`
+### `data/estacoes_nivel.csv` e `data/estacoes_pluv.csv`
 - Separador `;`
 - Colunas mínimas: `CODIGO`, `LAT`, `LON` (ideal incluir `NOME`)
 
-### `data/processed/telemetria/*.parquet`
+### `data/telemetria/*.csv`
 - Colunas: `station_id`, `datetime`, `rain`, `level`, `flow`
 - Frequência original da API (depois agregada para horário no script de acumulado)
 
-### `data/processed/accum/*.parquet`
+### `data/accum/*.parquet`
 - Colunas: `datetime`, `station_id`, `rain_acc_24h`, `rain_acc_72h`, `rain_acc_240h`, `rain_acc_720h`
 
-### `data/processed/interp/*.tif`
+### `data/interp/*.tif`
 - COG em `EPSG:4326`
 - Tags incluem horizonte e horário de referência
 
 ## JSONs para relatório
 
-Cada run gera pasta `data/processed/reports/<run_id>/` com:
+Cada run gera pasta `data/reports/<run_id>/` com:
 - `config_snapshot.json`: configuração efetivamente usada no run.
 - `fetch_data_summary.json`: status por estação na coleta ANA.
 - `accumulate_interpolate_summary.json`: resumo de acumulados e camadas raster geradas.

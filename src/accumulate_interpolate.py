@@ -4,15 +4,14 @@ from __future__ import annotations
 Gera acumulados de chuva (24h, 72h, 240h, 720h) por estação e interpolação IDW simples.
 
 Entradas:
-- data/processed/telemetria/{CODIGO}.parquet  (campos: station_id, datetime, rain)
-- data/processed/estacoes_*.csv           (campos: CODIGO, LAT, LON)
+- data/telemetria/{CODIGO}.csv      (campos: station_id, datetime, rain)
+- data/estacoes_*.csv               (campos: CODIGO, LAT, LON)
 
 Saídas:
-- data/processed/accum/{CODIGO}.parquet       (séries com colunas rain_acc_{h})
-- data/processed/interp/accum_{h}.tif         (COG idw em EPSG:4326 com tags horizon/ref_time)
+- data/accum/{CODIGO}.parquet       (séries com colunas rain_acc_{h})
+- data/interp/accum_{h}.tif         (COG idw em EPSG:4326 com tags horizon/ref_time)
 """
 
-import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -23,31 +22,11 @@ from config_loader import load_runtime_config, resolve_paths, resolve_path, get_
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
-PROC_DIR = DATA_DIR / "processed"
-DEFAULT_TELEM_DIR = PROC_DIR / "telemetria"
-DEFAULT_ACCUM_DIR = PROC_DIR / "accum"
-DEFAULT_INTERP_DIR = PROC_DIR / "interp"
-DEFAULT_STATION_FILES = [PROC_DIR / "estacoes_nivel.csv", PROC_DIR / "estacoes_pluv.csv"]
+DEFAULT_TELEM_DIR = DATA_DIR / "telemetria"
+DEFAULT_ACCUM_DIR = DATA_DIR / "accum"
+DEFAULT_INTERP_DIR = DATA_DIR / "interp"
+DEFAULT_STATION_FILES = [DATA_DIR / "estacoes_nivel.csv", DATA_DIR / "estacoes_pluv.csv"]
 DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Gera acumulados por estação e rasters interpolados IDW."
-    )
-    parser.add_argument(
-        "--config-dir",
-        type=Path,
-        default=REPO_ROOT / "config",
-        help="Diretório dos arquivos YAML de configuração.",
-    )
-    parser.add_argument(
-        "--event",
-        type=str,
-        default=None,
-        help="Nome do evento (arquivo em config/events/<nome>.yaml) para modo replay.",
-    )
-    return parser.parse_args()
 
 
 def load_stations(station_files: list[Path]) -> pd.DataFrame:
@@ -56,7 +35,7 @@ def load_stations(station_files: list[Path]) -> pd.DataFrame:
         if path.exists():
             frames.append(pd.read_csv(path, sep=";", encoding="utf-8"))
     if not frames:
-        raise FileNotFoundError("Nenhum CSV de estação encontrado em data/processed/estacoes_*.csv")
+        raise FileNotFoundError("Nenhum CSV de estação encontrado em data/estacoes_*.csv")
     df = (
         pd.concat(frames, ignore_index=True)
         .drop_duplicates(subset="CODIGO")
@@ -167,9 +146,9 @@ def build_interp_layers(
     return generated_layers
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_runtime_config(config_dir=args.config_dir, event_name=args.event)
+def main(*, config_dir: str | Path | None = None, event_name: str | None = None) -> None:
+    resolved_config_dir = Path(config_dir) if config_dir is not None else None
+    config = load_runtime_config(config_dir=resolved_config_dir, event_name=event_name)
 
     horizons_h = config.get("runtime", {}).get("accum_horizons_h", DEFAULT_HORIZONS_H)
     station_files = config.get("paths", {}).get("station_files", [])
@@ -185,8 +164,10 @@ def main() -> None:
 
     latest_records = []
     processed_station_count = 0
-    for parquet_path in telem_dir.glob("*.parquet"):
-        df = pd.read_parquet(parquet_path, columns=["station_id", "datetime", "rain"])
+    telemetry_files = sorted(telem_dir.glob("*.csv"))
+
+    for telemetry_path in telemetry_files:
+        df = pd.read_csv(telemetry_path, usecols=["station_id", "datetime", "rain"])
         if df.empty:
             continue
         df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
@@ -243,7 +224,7 @@ def main() -> None:
             }
             write_json(report_dir / "basin_stats.json", basin_stats)
 
-    print("Acumulados salvos em data/processed/accum/ e grades IDW em data/processed/interp/")
+    print("Acumulados salvos em data/accum/ e grades IDW em data/interp/")
 
 
 if __name__ == "__main__":

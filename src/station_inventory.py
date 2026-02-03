@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import pandas as pd
@@ -37,11 +36,10 @@ def write_outputs(df: pd.DataFrame, name: str, out_dir: Path) -> None:
 
 
 def main() -> None:
-    
-    nivel=Path(__file__).resolve().parent.parent / "data/spatial/EstacoesNivel.csv"
-    pluv=Path(__file__).resolve().parent.parent / "data/spatial/EstacoesPluv.csv"
+    nivel = Path(__file__).resolve().parent.parent / "data/spatial/EstacoesNivel.csv"
+    pluv = Path(__file__).resolve().parent.parent / "data/spatial/EstacoesPluv.csv"
 
-    out_dir=Path("data/processed")
+    out_dir = Path("data")
 
     nivel_df = load_minimal(nivel)
     pluv_df = load_minimal(pluv)

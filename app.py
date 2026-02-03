@@ -5,7 +5,7 @@ Dashboard Streamlit para explorar estações e grades interpoladas de chuva.
 Funcionalidades:
 - Mapa interativo (Folium) com clique em estações para mostrar séries.
 - Gráfico Plotly com chuva (barras) e nível (linha) dos últimos 30 dias.
-- Camada raster única (data/processed/interp) com liga/desliga e transparência ajustável.
+- Camada raster única (data/interp) com liga/desliga e transparência ajustável.
 """
 
 from datetime import datetime, timedelta
@@ -29,9 +29,8 @@ from plotly.subplots import make_subplots
 
 REPO_ROOT = Path(__file__).resolve().parent
 DATA_DIR = REPO_ROOT / "data"
-PROC_DIR = DATA_DIR / "processed"
-TELEMETRIA_DIR = PROC_DIR / "telemetria"
-INTERP_DIR = PROC_DIR / "interp"
+TELEMETRIA_DIR = DATA_DIR / "telemetria"
+INTERP_DIR = DATA_DIR / "interp"
 DAYS_WINDOW = 30
 
 # Paleta fixa Blues (claro→escuro)
@@ -77,7 +76,7 @@ st.markdown(
 def load_stations() -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for csv_name, kind in [("estacoes_nivel.csv", "nível"), ("estacoes_pluv.csv", "chuva")]:
-        path = PROC_DIR / csv_name
+        path = DATA_DIR / csv_name
         if not path.exists():
             continue
         df = pd.read_csv(path, sep=";", encoding="utf-8")
@@ -98,10 +97,10 @@ def load_stations() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_timeseries(station_id: str, days: int = 30) -> pd.DataFrame:
-    path = TELEMETRIA_DIR / f"{station_id}.parquet"
-    if not path.exists():
+    csv_path = TELEMETRIA_DIR / f"{station_id}.csv"
+    if not csv_path.exists():
         return pd.DataFrame(columns=["station_id", "datetime", "rain", "level", "flow"])
-    df = pd.read_parquet(path)
+    df = pd.read_csv(csv_path)
     df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
     cutoff = datetime.utcnow() - timedelta(days=days)
     df = df[df["datetime"] >= cutoff].sort_values("datetime")

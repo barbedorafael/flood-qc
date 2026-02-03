@@ -40,15 +40,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "paths": {
         "station_files": [
-            "data/processed/estacoes_nivel.csv",
-            "data/processed/estacoes_pluv.csv",
+            "data/estacoes_nivel.csv",
+            "data/estacoes_pluv.csv",
         ],
-        "telemetry_dir": "data/processed/telemetria",
-        "accum_dir": "data/processed/accum",
-        "interp_dir": "data/processed/interp",
+        "telemetry_dir": "data/telemetria",
+        "accum_dir": "data/accum",
+        "interp_dir": "data/interp",
     },
     "outputs": {
-        "reports_base_dir": "data/processed/reports",
+        "reports_base_dir": "data/reports",
         "write_summary_json": True,
         "write_station_json": True,
         "write_basin_json": True,
@@ -134,7 +134,7 @@ def resolve_paths(raw_paths: list[str], *, root: Path = REPO_ROOT) -> list[Path]
 
 
 def get_report_dir(config: dict[str, Any], *, root: Path = REPO_ROOT) -> Path:
-    base = config.get("outputs", {}).get("reports_base_dir", "data/processed/reports")
+    base = config.get("outputs", {}).get("reports_base_dir", "data/reports")
     return resolve_path(base, root=root) / config["runtime"]["run_id"]
 
 

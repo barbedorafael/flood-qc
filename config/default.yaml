@@ -10,7 +10,7 @@ run:
 
 ingest:
   ana_base_url: "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
-  request_days: 3
+  request_days: 7
   timeout_seconds: 15
 
 windows:
@@ -24,14 +24,14 @@ interpolation:
 
 paths:
   station_files:
-    - "data/processed/estacoes_nivel.csv"
-    - "data/processed/estacoes_pluv.csv"
-  telemetry_dir: "data/processed/telemetria"
-  accum_dir: "data/processed/accum"
-  interp_dir: "data/processed/interp"
+    - "data/estacoes_nivel.csv"
+    - "data/estacoes_pluv.csv"
+  telemetry_dir: "data/telemetria"
+  accum_dir: "data/accum"
+  interp_dir: "data/interp"
 
 outputs:
-  reports_base_dir: "data/processed/reports"
+  reports_base_dir: "data/reports"
   write_summary_json: true
   write_station_json: true
   write_basin_json: true
