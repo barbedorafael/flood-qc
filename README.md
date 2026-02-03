@@ -43,7 +43,7 @@ Arquitetura intencionalmente enxuta:
   - `numpy`
   - `rasterio`
   - `pyyaml`
-- Pacotes opcionais (dashboard):
+- Pacotes para o dashboard:
   - `streamlit`
   - `plotly`
   - `folium`
@@ -156,7 +156,7 @@ Observações:
 - Valores faltantes são tratados como `0` no cálculo de acumulado.
 - Horizontes e parâmetros IDW vêm da configuração (`windows` e `interpolation`).
 
-### 4) `app.py` (opcional)
+### 4) `app.py`
 
 Dashboard Streamlit para inspeção rápida:
 - mapa de estações;
