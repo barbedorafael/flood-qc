@@ -1,6 +1,6 @@
 # Flood QC - Rio Grande do Sul
 
-Ferramenta simples em Python para **QC e preparo de dados de entrada/saída** do fluxo de previsão de cheias no RS.
+Ferramenta em Python para **QC e preparo de dados de entrada/saída** do fluxo de previsão de cheias no RS.
 
 Arquitetura intencionalmente enxuta:
 - scripts em `src/`;
