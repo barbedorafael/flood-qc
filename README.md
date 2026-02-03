@@ -11,7 +11,8 @@ Arquitetura intencionalmente enxuta:
 
 - Inventário mínimo de estações (`src/station_inventory.py`).
 - Coleta de telemetria ANA (chuva/nível/vazão) (`src/fetch_data.py`).
-- Cálculo de chuva acumulada por estação + interpolação IDW (`src/accumulate_interpolate.py`).
+- Cálculo de chuva acumulada por estação (`src/accumulate.py`).
+- Interpolação IDW a partir dos acumulados (`src/interpolate.py`).
 - Dashboard exploratório em desenvolvimento (`app.py`).
 
 ## Próximos passos
@@ -29,7 +30,7 @@ Arquitetura intencionalmente enxuta:
 - `data/` saídas intermediárias e prontas para uso.
   - `estacoes_nivel.csv`, `estacoes_pluv.csv`
   - `telemetria/*.csv`
-  - `accum/*.parquet`
+  - `accum/*.csv`
   - `interp/*.tif`
   - `reports/<run_id>/*.json`
 
@@ -39,7 +40,6 @@ Arquitetura intencionalmente enxuta:
 - Pacotes principais:
   - `pandas`
   - `requests`
-  - `pyarrow`
   - `numpy`
   - `rasterio`
   - `pyyaml`
@@ -56,7 +56,7 @@ Exemplo de instalação rápida:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install pandas requests pyarrow numpy rasterio pyyaml streamlit plotly folium streamlit-folium branca affine
+pip install pandas requests numpy rasterio pyyaml streamlit plotly folium streamlit-folium branca affine
 ```
 
 ## Fluxo recomendado de execução
@@ -66,15 +66,19 @@ Execute na raiz do repositório:
 ```bash
 python src/station_inventory.py
 python src/fetch_data.py
-python src/accumulate_interpolate.py
+python src/accumulate.py
+python src/interpolate.py
 ```
+
+Compatibilidade: `python src/accumulate_interpolate.py` ainda funciona e executa as duas etapas em sequência.
 
 Para replay de evento:
 
 ```bash
 # ajuste o replay em config/run.yaml (mode/event_name/reference_time_utc)
 python src/fetch_data.py
-python src/accumulate_interpolate.py
+python src/accumulate.py
+python src/interpolate.py
 ```
 
 visualização:
@@ -140,25 +144,34 @@ Observações:
 - O script limpa `data/telemetria/` no início do run e grava um CSV por estação.
 - Dentro de cada arquivo, os registros são ordenados por tempo e deduplicados por `station_id + datetime`.
 
-### 3) `src/accumulate_interpolate.py`
+### 3) `src/accumulate.py`
 
-Processa a telemetria de chuva e gera:
-1) séries acumuladas por estação;
-2) rasters interpolados por IDW.
+Processa a telemetria de chuva e gera séries acumuladas por estação.
 
 Horizontes atuais:
 - 24h, 72h (3 dias), 240h (10 dias), 720h (30 dias)
 
 Saídas:
-- `data/accum/{CODIGO}.parquet`
-- `data/interp/accum_{horizonte}.tif`
+- `data/accum/{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`
 
 Observações:
 - Resample horário com soma de chuva.
 - Valores faltantes são tratados como `0` no cálculo de acumulado.
-- Horizontes e parâmetros IDW vêm da configuração (`windows` e `interpolation`).
+- Horizontes vêm da configuração (`windows.accum_hours`).
+- `yyyymmdd/hhmm` representam `reference_time_utc - horizonte`.
 
-### 4) `app.py`
+### 4) `src/interpolate.py`
+
+Consome os acumulados e gera rasters interpolados por IDW.
+
+Saídas:
+- `data/interp/accum_{yyyymmdd}_{hhmm}_{horizonte}.tif`
+
+Observações:
+- Lê somente CSVs no padrão `{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`.
+- Parâmetros IDW vêm de `interpolation.grid_res_deg` e `interpolation.power`.
+
+### 5) `app.py`
 
 Dashboard Streamlit para inspeção rápida:
 - mapa de estações;
@@ -175,8 +188,9 @@ Dashboard Streamlit para inspeção rápida:
 - Colunas: `station_id`, `datetime`, `rain`, `level`, `flow`
 - Frequência original da API (depois agregada para horário no script de acumulado)
 
-### `data/accum/*.parquet`
-- Colunas: `datetime`, `station_id`, `rain_acc_24h`, `rain_acc_72h`, `rain_acc_240h`, `rain_acc_720h`
+### `data/accum/*.csv`
+- Nome: `{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`
+- Colunas: `station_id`, `reference_time_utc`, `window_start_utc`, `station_latest_time_utc`, `horizon_label`, `horizon_hours`, `rain_acc_mm`
 
 ### `data/interp/*.tif`
 - COG em `EPSG:4326`
@@ -187,7 +201,8 @@ Dashboard Streamlit para inspeção rápida:
 Cada run gera pasta `data/reports/<run_id>/` com:
 - `config_snapshot.json`: configuração efetivamente usada no run.
 - `fetch_data_summary.json`: status por estação na coleta ANA.
-- `accumulate_interpolate_summary.json`: resumo de acumulados e camadas raster geradas.
+- `accumulate_summary.json`: resumo da etapa de acumulado por estação.
+- `interpolate_summary.json`: resumo da etapa de interpolação raster.
 - `basin_stats.json`: lista de bacias selecionadas e marcação de análise detalhada (estrutura base para relatório).
 
 Exemplo de `fetch_data_summary.json`:
@@ -205,17 +220,32 @@ Exemplo de `fetch_data_summary.json`:
 }
 ```
 
-Exemplo de `accumulate_interpolate_summary.json`:
+Exemplo de `accumulate_summary.json`:
 
 ```json
 {
-  "step": "accumulate_interpolate",
+  "step": "accumulate",
+  "run_id": "20260202T140000Z",
+  "accum_horizons_h": {"24h": 24, "72h": 72, "240h": 240, "720h": 720},
+  "telemetry_files_found": 287,
+  "stations_with_accum": 287,
+  "accum_files_generated": ["83970000_20260201_1400_24h.csv", "..."],
+  "accum_filename_pattern": "{station}_{yyyymmdd}_{hhmm}_{horizon}.csv"
+}
+```
+
+Exemplo de `interpolate_summary.json`:
+
+```json
+{
+  "step": "interpolate",
   "run_id": "20260202T140000Z",
   "accum_horizons_h": {"24h": 24, "72h": 72, "240h": 240, "720h": 720},
   "grid_res_deg": 0.1,
   "idw_power": 2.0,
-  "stations_with_accum": 287,
-  "layers_generated": ["accum_24h.tif", "accum_72h.tif", "accum_240h.tif", "accum_720h.tif"]
+  "layers_generated": ["accum_20260201_1400_24h.tif", "accum_20260130_1400_72h.tif"],
+  "accum_input_pattern": "{station}_{yyyymmdd}_{hhmm}_{horizon}.csv",
+  "interp_output_pattern": "accum_{yyyymmdd}_{hhmm}_{horizon}.tif"
 }
 ```
 
@@ -223,7 +253,7 @@ Exemplo de `basin_stats.json`:
 
 ```json
 {
-  "step": "accumulate_interpolate",
+  "step": "interpolate",
   "run_id": "20260202T140000Z",
   "reference_time_utc": "2026-02-02T14:00:00Z",
   "basins": [

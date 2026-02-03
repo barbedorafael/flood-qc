@@ -11,7 +11,7 @@ run:
 ingest:
   ana_base_url: "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
   request_days: 7
-  timeout_seconds: 15
+  timeout_seconds: 5
 
 windows:
   forecast_days: [1, 3, 10, 30]
