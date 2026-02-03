@@ -17,6 +17,7 @@ DEFAULT_STATION_FILES = [
     DATA_DIR / "estacoes_nivel.csv",
     DATA_DIR / "estacoes_pluv.csv",
 ]
+REQUEST_WINDOW_HOURS = 24
 
 
 def load_station_codes(station_files: list[Path]) -> list[str]:
@@ -77,20 +78,35 @@ def parse_response(text: str) -> pd.DataFrame:
 def fetch_station_data(
     station: str,
     *,
-    reference_time_utc: datetime,
-    request_days: int,
+    start_time_utc: datetime,
+    end_time_utc: datetime,
     base_url: str,
     timeout_seconds: float,
 ) -> pd.DataFrame:
-    now = reference_time_utc
     params = {
         "codEstacao": station,
-        "dataInicio": (now - timedelta(days=request_days)).strftime("%d/%m/%Y %H:%M:%S"),
-        "dataFim": now.strftime("%d/%m/%Y %H:%M:%S"),
+        "dataInicio": start_time_utc.strftime("%d/%m/%Y %H:%M:%S"),
+        "dataFim": end_time_utc.strftime("%d/%m/%Y %H:%M:%S"),
     }
     response = requests.get(base_url, params=params, timeout=timeout_seconds)
     response.raise_for_status()
     return parse_response(response.text)
+
+
+def iter_request_windows(reference_time_utc: datetime, request_days: int) -> Iterable[tuple[datetime, datetime]]:
+    """
+    Divide o intervalo total em janelas de 24h sem sobreposição.
+    """
+    start_time = reference_time_utc - timedelta(days=request_days)
+    window_delta = timedelta(hours=REQUEST_WINDOW_HOURS)
+    one_second = timedelta(seconds=1)
+
+    for window_index in range(request_days):
+        window_start = start_time + (window_index * window_delta)
+        window_end = window_start + window_delta - one_second
+        if window_index == request_days - 1:
+            window_end = reference_time_utc
+        yield window_start, window_end
 
 
 def clear_telemetry_dir(output_dir: Path) -> int:
@@ -119,7 +135,9 @@ def persist_station_data(station: str, df: pd.DataFrame, output_dir: Path) -> in
         .drop_duplicates(["station_id", "datetime"], keep="last")
         .reset_index(drop=True)
     )
-    df.to_csv(file_path, index=False, encoding="utf-8")
+    if df.empty:
+        return 0
+    df.to_csv(file_path, mode="a", header=not file_path.exists(), index=False, encoding="utf-8")
     return len(df)
 
 
@@ -135,9 +153,13 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
 
     base_url = str(config.get("ingest", {}).get("ana_base_url"))
     request_days = int(config.get("ingest", {}).get("request_days", 3))
+    if request_days < 1:
+        print("Valor inválido para ingest.request_days: use um inteiro >= 1.")
+        return
     timeout_seconds = float(config.get("ingest", {}).get("timeout_seconds", 15))
     output_dir = resolve_path(config.get("paths", {}).get("telemetry_dir", "data/telemetria"))
     reference_time_utc = pd.to_datetime(config["runtime"]["reference_time_utc"]).to_pydatetime()
+    request_windows = list(iter_request_windows(reference_time_utc, request_days))
     include_station_details = bool(config.get("outputs", {}).get("write_station_json", True))
     removed_entries = clear_telemetry_dir(output_dir)
     print(f"Diretório de telemetria limpo: {output_dir} ({removed_entries} entradas removidas)")
@@ -149,6 +171,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         "event_name": config.get("run", {}).get("event_name"),
         "reference_time_utc": config["runtime"]["reference_time_utc"],
         "request_days": request_days,
+        "request_window_hours": REQUEST_WINDOW_HOURS,
         "stations_total": len(stations),
         "stations_ok": 0,
         "stations_no_data": 0,
@@ -160,39 +183,51 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         summary["details"] = []
 
     for station in stations:
+        records_fetched = 0
+        records_written = 0
         try:
-            df = fetch_station_data(
-                station,
-                reference_time_utc=reference_time_utc,
-                request_days=request_days,
-                base_url=base_url,
-                timeout_seconds=timeout_seconds,
-            )
+            for start_time_utc, end_time_utc in request_windows:
+                df = fetch_station_data(
+                    station,
+                    start_time_utc=start_time_utc,
+                    end_time_utc=end_time_utc,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+                records_fetched += len(df)
+                records_written += persist_station_data(station, df, output_dir)
         except requests.RequestException as exc:
             print(f"Falha na estação {station}: {exc}")
             summary["stations_error"] += 1
             if include_station_details:
-                summary["details"].append({"station_id": station, "status": "error", "message": str(exc)})
+                summary["details"].append(
+                    {
+                        "station_id": station,
+                        "status": "error",
+                        "message": str(exc),
+                        "records_fetched": int(records_fetched),
+                        "records_total_file": int(records_written),
+                    }
+                )
             continue
-        if df.empty:
+        if records_written == 0:
             print(f"Sem dados novos para {station}")
             summary["stations_no_data"] += 1
             if include_station_details:
                 summary["details"].append(
-                    {"station_id": station, "status": "no_data", "records_fetched": 0}
+                    {"station_id": station, "status": "no_data", "records_fetched": 0, "records_total_file": 0}
                 )
             continue
 
-        total_records = persist_station_data(station, df, output_dir)
-        print(f"{station}: {len(df)} registros novos salvos em {output_dir / (station + '.csv')}")
+        print(f"{station}: {records_written} registros novos salvos em {output_dir / (station + '.csv')}")
         summary["stations_ok"] += 1
         if include_station_details:
             summary["details"].append(
                 {
                     "station_id": station,
                     "status": "ok",
-                    "records_fetched": int(len(df)),
-                    "records_total_file": int(total_records),
+                    "records_fetched": int(records_fetched),
+                    "records_total_file": int(records_written),
                 }
             )
 
