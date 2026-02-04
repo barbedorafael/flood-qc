@@ -75,7 +75,7 @@ Compatibilidade: `python src/accumulate_interpolate.py` ainda funciona e executa
 Para replay de evento:
 
 ```bash
-# ajuste o replay em config/run.yaml (mode/event_name/reference_time_utc)
+# ajuste o replay em config/run.yaml (mode/event_name/reference_time)
 python src/fetch_data.py
 python src/accumulate.py
 python src/interpolate.py
@@ -97,18 +97,21 @@ Arquivos:
 - `config/qc.yaml`: thresholds de QC.
 
 Parâmetros mais úteis:
-- `run.reference_time_utc`: data/hora do run (se `null`, usa hora UTC atual).
+- `run.reference_time`: data/hora do run (se `null`, usa hora atual truncada para a hora cheia).
 - `windows.forecast_days`: janelas de previsão (1, 3, 10, 30 etc).
 - `windows.accum_hours`: janelas de acumulado (24, 72, 240, 720 etc).
 - `interpolation.grid_res_deg` e `interpolation.power`: parâmetros IDW.
 - `basins.selected_ids` e `basins.detailed_stats_ids`.
+
+Observação:
+- Todos os horários do projeto usam `America/Sao_Paulo`.
 
 Exemplo mínimo em `config/run.yaml`:
 
 ```yaml
 run:
   mode: "event_replay"
-  reference_time_utc: "2024-05-05T12:00:00Z"
+  reference_time: "2024-05-05T09:00:00"
   event_name: "maio_2024"
 ```
 
@@ -158,7 +161,7 @@ Observações:
 - Resample horário com soma de chuva.
 - Valores faltantes são tratados como `0` no cálculo de acumulado.
 - Horizontes vêm da configuração (`windows.accum_hours`).
-- `yyyymmdd/hhmm` representam `reference_time_utc - horizonte`.
+- `yyyymmdd/hhmm` representam `reference_time - horizonte`.
 
 ### 4) `src/interpolate.py`
 
@@ -190,7 +193,7 @@ Dashboard Streamlit para inspeção rápida:
 
 ### `data/accum/*.csv`
 - Nome: `{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`
-- Colunas: `station_id`, `reference_time_utc`, `window_start_utc`, `station_latest_time_utc`, `horizon_label`, `horizon_hours`, `rain_acc_mm`
+- Colunas: `station_id`, `reference_time`, `window_start`, `station_latest_time`, `horizon_label`, `horizon_hours`, `rain_acc_mm`
 
 ### `data/interp/*.tif`
 - COG em `EPSG:4326`
@@ -210,9 +213,9 @@ Exemplo de `fetch_data_summary.json`:
 ```json
 {
   "step": "fetch_data",
-  "run_id": "20260202T140000Z",
+  "run_id": "20260202T140000",
   "mode": "operational",
-  "reference_time_utc": "2026-02-02T14:00:00Z",
+  "reference_time": "2026-02-02T14:00:00",
   "stations_total": 312,
   "stations_ok": 287,
   "stations_no_data": 20,
@@ -225,7 +228,7 @@ Exemplo de `accumulate_summary.json`:
 ```json
 {
   "step": "accumulate",
-  "run_id": "20260202T140000Z",
+  "run_id": "20260202T140000",
   "accum_horizons_h": {"24h": 24, "72h": 72, "240h": 240, "720h": 720},
   "telemetry_files_found": 287,
   "stations_with_accum": 287,
@@ -239,7 +242,7 @@ Exemplo de `interpolate_summary.json`:
 ```json
 {
   "step": "interpolate",
-  "run_id": "20260202T140000Z",
+  "run_id": "20260202T140000",
   "accum_horizons_h": {"24h": 24, "72h": 72, "240h": 240, "720h": 720},
   "grid_res_deg": 0.1,
   "idw_power": 2.0,
@@ -254,8 +257,8 @@ Exemplo de `basin_stats.json`:
 ```json
 {
   "step": "interpolate",
-  "run_id": "20260202T140000Z",
-  "reference_time_utc": "2026-02-02T14:00:00Z",
+  "run_id": "20260202T140000",
+  "reference_time": "2026-02-02T14:00:00",
   "basins": [
     {"basin_id": "7601", "detailed": true, "status": "pending_stats_implementation"},
     {"basin_id": "7612", "detailed": false, "status": "pending_stats_implementation"}
@@ -268,6 +271,6 @@ Exemplo de `basin_stats.json`:
 - Janela de coleta ANA: `config/default.yaml` → `ingest.request_days`.
 - Janelas de acumulado: `config/default.yaml` → `windows.accum_hours`.
 - Janelas de previsão: `config/default.yaml` → `windows.forecast_days`.
-- Data de referência do run: `config/run.yaml` → `run.reference_time_utc`.
+- Data de referência do run: `config/run.yaml` → `run.reference_time`.
 - Bacias com análise detalhada: `config/basins.yaml` → `basins.detailed_stats_ids`.
 - Parâmetros de interpolação: `config/default.yaml` → `interpolation`.

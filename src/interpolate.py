@@ -12,7 +12,6 @@ Saídas:
   (yyyymmdd/hhmm representam reference_time - horizonte)
 """
 
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +26,7 @@ from config_loader import (
     get_report_dir,
     write_json,
     get_runtime_reference_time,
+    DEFAULT_TIMEZONE,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +35,7 @@ DEFAULT_ACCUM_DIR = DATA_DIR / "accum"
 DEFAULT_INTERP_DIR = DATA_DIR / "interp"
 DEFAULT_STATION_FILES = [DATA_DIR / "estacoes_nivel.csv", DATA_DIR / "estacoes_pluv.csv"]
 DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
-LOCAL_TZ = datetime.now().astimezone().tzinfo
+LOCAL_TZ = DEFAULT_TIMEZONE
 
 
 def to_local_timestamp(value: object) -> pd.Timestamp:
@@ -43,8 +43,7 @@ def to_local_timestamp(value: object) -> pd.Timestamp:
     if pd.isna(ts):
         return pd.NaT
     if ts.tzinfo is not None:
-        if LOCAL_TZ is not None:
-            ts = ts.tz_convert(LOCAL_TZ)
+        ts = ts.tz_convert(LOCAL_TZ)
         ts = ts.tz_localize(None)
     return ts
 

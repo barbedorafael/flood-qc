@@ -16,6 +16,7 @@ from config_loader import (
     get_report_dir,
     write_json,
     get_runtime_reference_time,
+    DEFAULT_TIMEZONE,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,8 @@ def parse_response(text: str) -> pd.DataFrame:
             timestamp = pd.to_datetime(when.strip(), errors="raise")
         except ValueError:
             continue
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.tz_convert(DEFAULT_TIMEZONE).tz_localize(None)
         entry = {
             "station_id": station.strip(),
             "datetime": timestamp,

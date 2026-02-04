@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 try:
     import yaml
@@ -16,6 +17,7 @@ except ImportError as exc:  # pragma: no cover - dependency guard
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_DIR = REPO_ROOT / "config"
+DEFAULT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "schema_version": "1.0",
@@ -93,8 +95,8 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 def _parse_reference_time(value: Any) -> datetime:
     if value in (None, "", "now"):
-        now = datetime.now()
-        return now.replace(minute=0, second=0, microsecond=0)
+        now = datetime.now(DEFAULT_TIMEZONE)
+        return now.replace(minute=0, second=0, microsecond=0, tzinfo=None)
 
     if isinstance(value, datetime):
         dt = value
@@ -105,7 +107,7 @@ def _parse_reference_time(value: Any) -> datetime:
         dt = datetime.fromisoformat(text)
 
     if dt.tzinfo is not None:
-        dt = dt.astimezone().replace(tzinfo=None)
+        dt = dt.astimezone(DEFAULT_TIMEZONE).replace(tzinfo=None)
     return dt
 
 
@@ -198,7 +200,7 @@ def load_runtime_config(
     config["runtime"] = {
         "reference_time": reference_dt.isoformat(),
         "run_id": run_id,
-        "loaded_at": datetime.now().replace(microsecond=0).isoformat(),
+        "loaded_at": datetime.now(DEFAULT_TIMEZONE).replace(microsecond=0, tzinfo=None).isoformat(),
         "config_dir": str(config_dir),
         "accum_horizons_h": _build_accum_horizons(config.get("windows", {}).get("accum_hours", [])),
     }

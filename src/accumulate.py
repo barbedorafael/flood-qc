@@ -11,20 +11,26 @@ Saídas:
   (yyyymmdd/hhmm representam reference_time - horizonte)
 """
 
-from datetime import datetime
 from typing import Any
 from pathlib import Path
 
 import pandas as pd
 
-from config_loader import load_runtime_config, resolve_path, get_report_dir, write_json, get_runtime_reference_time
+from config_loader import (
+    load_runtime_config,
+    resolve_path,
+    get_report_dir,
+    write_json,
+    get_runtime_reference_time,
+    DEFAULT_TIMEZONE,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 DEFAULT_TELEM_DIR = DATA_DIR / "telemetria"
 DEFAULT_ACCUM_DIR = DATA_DIR / "accum"
 DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
-LOCAL_TZ = datetime.now().astimezone().tzinfo
+LOCAL_TZ = DEFAULT_TIMEZONE
 
 
 def to_local_timestamp(value: Any) -> pd.Timestamp:
@@ -32,8 +38,7 @@ def to_local_timestamp(value: Any) -> pd.Timestamp:
     if pd.isna(ts):
         return pd.NaT
     if ts.tzinfo is not None:
-        if LOCAL_TZ is not None:
-            ts = ts.tz_convert(LOCAL_TZ)
+        ts = ts.tz_convert(LOCAL_TZ)
         ts = ts.tz_localize(None)
     return ts
 
@@ -41,8 +46,7 @@ def to_local_timestamp(value: Any) -> pd.Timestamp:
 def to_local_series(series: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(series, errors="coerce")
     if parsed.dt.tz is not None:
-        if LOCAL_TZ is not None:
-            parsed = parsed.dt.tz_convert(LOCAL_TZ)
+        parsed = parsed.dt.tz_convert(LOCAL_TZ)
         parsed = parsed.dt.tz_localize(None)
     return parsed
 

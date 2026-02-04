@@ -3,8 +3,8 @@ schema_version: "1.0"
 run:
   # "operational" usa dados recentes; "event_replay" usa uma data/evento passado.
   mode: "operational"
-  # Exemplo: "2024-05-05T12:00:00Z". Se null, usa hora UTC atual truncada para a hora cheia.
-  reference_time_utc: null
+  # Exemplo: "2024-05-05T09:00:00". Se null, usa a hora atual truncada para a hora cheia.
+  reference_time: null
   # Nome opcional de evento em config/events/<event_name>.yaml
   event_name: null
 

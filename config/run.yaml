@@ -3,11 +3,11 @@
 
 run:
   mode: "operational"
-  reference_time_utc: null
+  reference_time: null
   event_name: null
 
 # Exemplo para usar replay:
 # run:
 #   mode: "event_replay"
-#   reference_time_utc: "2024-05-05T12:00:00Z"
+#   reference_time: "2024-05-05T09:00:00"
 #   event_name: "maio_2024"
