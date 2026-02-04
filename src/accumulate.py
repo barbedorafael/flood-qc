@@ -8,20 +8,42 @@ Entradas:
 
 Saídas:
 - data/accum/{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv
-  (yyyymmdd/hhmm representam reference_time_utc - horizonte)
+  (yyyymmdd/hhmm representam reference_time - horizonte)
 """
 
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from config_loader import load_runtime_config, resolve_path, get_report_dir, write_json
+from config_loader import load_runtime_config, resolve_path, get_report_dir, write_json, get_runtime_reference_time
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 DEFAULT_TELEM_DIR = DATA_DIR / "telemetria"
 DEFAULT_ACCUM_DIR = DATA_DIR / "accum"
 DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
+LOCAL_TZ = datetime.now().astimezone().tzinfo
+
+
+def to_local_timestamp(value: object) -> pd.Timestamp:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return pd.NaT
+    if ts.tzinfo is not None:
+        if LOCAL_TZ is not None:
+            ts = ts.tz_convert(LOCAL_TZ)
+        ts = ts.tz_localize(None)
+    return ts
+
+
+def to_local_series(series: pd.Series) -> pd.Series:
+    parsed = pd.to_datetime(series, errors="coerce")
+    if parsed.dt.tz is not None:
+        if LOCAL_TZ is not None:
+            parsed = parsed.dt.tz_convert(LOCAL_TZ)
+        parsed = parsed.dt.tz_localize(None)
+    return parsed
 
 
 def compute_accum(df: pd.DataFrame, horizons_h: dict[str, int]) -> pd.DataFrame:
@@ -29,7 +51,7 @@ def compute_accum(df: pd.DataFrame, horizons_h: dict[str, int]) -> pd.DataFrame:
         return df
 
     df = df.copy()
-    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
+    df["datetime"] = to_local_series(df["datetime"])
     df = df.dropna(subset=["datetime"])
     if df.empty:
         return df
@@ -50,12 +72,12 @@ def compute_accum(df: pd.DataFrame, horizons_h: dict[str, int]) -> pd.DataFrame:
 def build_accum_filename(
     station_id: str,
     *,
-    reference_time_utc: pd.Timestamp,
+    reference_time: pd.Timestamp,
     horizon_hours: int,
     horizon_label: str,
 ) -> str:
-    window_start_utc = reference_time_utc - pd.Timedelta(hours=horizon_hours)
-    return f"{station_id}_{window_start_utc:%Y%m%d}_{window_start_utc:%H%M}_{horizon_label}.csv"
+    window_start = reference_time - pd.Timedelta(hours=horizon_hours)
+    return f"{station_id}_{window_start:%Y%m%d}_{window_start:%H%M}_{horizon_label}.csv"
 
 
 def save_station_horizon_csv(
@@ -63,27 +85,28 @@ def save_station_horizon_csv(
     station_id: str,
     horizon_label: str,
     horizon_hours: int,
-    reference_time_utc: pd.Timestamp,
-    station_latest_time_utc: pd.Timestamp,
+    reference_time: pd.Timestamp,
+    station_latest_time: pd.Timestamp,
     rain_acc_value: float,
     accum_dir: Path,
 ) -> Path:
     accum_dir.mkdir(parents=True, exist_ok=True)
     out_name = build_accum_filename(
         station_id,
-        reference_time_utc=reference_time_utc,
+        reference_time=reference_time,
         horizon_hours=horizon_hours,
         horizon_label=horizon_label,
     )
     out_path = accum_dir / out_name
+    window_start = reference_time - pd.Timedelta(hours=horizon_hours)
 
     payload = pd.DataFrame(
         [
             {
                 "station_id": station_id,
-                "reference_time_utc": reference_time_utc.isoformat(),
-                "window_start_utc": (reference_time_utc - pd.Timedelta(hours=horizon_hours)).isoformat(),
-                "station_latest_time_utc": pd.to_datetime(station_latest_time_utc, utc=True).isoformat(),
+                "reference_time": reference_time.isoformat(),
+                "window_start": window_start.isoformat(),
+                "station_latest_time": to_local_timestamp(station_latest_time).isoformat(),
                 "horizon_label": horizon_label,
                 "horizon_hours": int(horizon_hours),
                 "rain_acc_mm": float(rain_acc_value),
@@ -101,7 +124,9 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
     horizons_h = config.get("runtime", {}).get("accum_horizons_h", DEFAULT_HORIZONS_H)
     telem_dir = resolve_path(config.get("paths", {}).get("telemetry_dir", str(DEFAULT_TELEM_DIR)))
     accum_dir = resolve_path(config.get("paths", {}).get("accum_dir", str(DEFAULT_ACCUM_DIR)))
-    reference_time_utc = pd.to_datetime(config["runtime"]["reference_time_utc"], utc=True)
+    reference_time = to_local_timestamp(get_runtime_reference_time(config))
+    if pd.isna(reference_time):
+        raise ValueError("runtime.reference_time inválido.")
 
     telemetry_files = sorted(telem_dir.glob("*.csv"))
     stations_with_accum = 0
@@ -115,8 +140,8 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         if df.empty:
             continue
 
-        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True)
-        df = df[df["datetime"] <= reference_time_utc]
+        df["datetime"] = to_local_series(df["datetime"])
+        df = df[df["datetime"] <= reference_time]
         if df.empty:
             continue
 
@@ -126,7 +151,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
 
         latest_row = accum_df.sort_values("datetime").tail(1).iloc[0]
         station_id = str(latest_row["station_id"])
-        station_latest_time_utc = pd.to_datetime(latest_row["datetime"], utc=True)
+        station_latest_time = to_local_timestamp(latest_row["datetime"])
 
         wrote_any = False
         for horizon_label, horizon_hours in horizons_h.items():
@@ -137,8 +162,8 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
                 station_id=station_id,
                 horizon_label=horizon_label,
                 horizon_hours=int(horizon_hours),
-                reference_time_utc=reference_time_utc,
-                station_latest_time_utc=station_latest_time_utc,
+                reference_time=reference_time,
+                station_latest_time=station_latest_time,
                 rain_acc_value=float(latest_row[col]),
                 accum_dir=accum_dir,
             )
@@ -154,7 +179,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
             "run_id": config["runtime"]["run_id"],
             "mode": config.get("run", {}).get("mode", "operational"),
             "event_name": config.get("run", {}).get("event_name"),
-            "reference_time_utc": config["runtime"]["reference_time_utc"],
+            "reference_time": reference_time.isoformat(),
             "accum_horizons_h": horizons_h,
             "telemetry_files_found": len(telemetry_files),
             "stations_with_accum": stations_with_accum,

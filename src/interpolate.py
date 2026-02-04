@@ -9,9 +9,10 @@ Entradas:
 
 Saídas:
 - data/interp/accum_{yyyymmdd}_{hhmm}_{horizonte}.tif
-  (yyyymmdd/hhmm representam reference_time_utc - horizonte)
+  (yyyymmdd/hhmm representam reference_time - horizonte)
 """
 
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,14 @@ import pandas as pd
 import rasterio
 from rasterio.transform import from_origin
 
-from config_loader import load_runtime_config, resolve_paths, resolve_path, get_report_dir, write_json
+from config_loader import (
+    load_runtime_config,
+    resolve_paths,
+    resolve_path,
+    get_report_dir,
+    write_json,
+    get_runtime_reference_time,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
@@ -27,6 +35,18 @@ DEFAULT_ACCUM_DIR = DATA_DIR / "accum"
 DEFAULT_INTERP_DIR = DATA_DIR / "interp"
 DEFAULT_STATION_FILES = [DATA_DIR / "estacoes_nivel.csv", DATA_DIR / "estacoes_pluv.csv"]
 DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
+LOCAL_TZ = datetime.now().astimezone().tzinfo
+
+
+def to_local_timestamp(value: object) -> pd.Timestamp:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return pd.NaT
+    if ts.tzinfo is not None:
+        if LOCAL_TZ is not None:
+            ts = ts.tz_convert(LOCAL_TZ)
+        ts = ts.tz_localize(None)
+    return ts
 
 
 def load_stations(station_files: list[Path]) -> pd.DataFrame:
@@ -49,28 +69,28 @@ def load_stations(station_files: list[Path]) -> pd.DataFrame:
     return df.dropna(subset=["lat", "lon"])
 
 
-def build_window_start_utc(reference_time_utc: pd.Timestamp, horizon_hours: int) -> pd.Timestamp:
-    return reference_time_utc - pd.Timedelta(hours=horizon_hours)
+def build_window_start(reference_time: pd.Timestamp, horizon_hours: int) -> pd.Timestamp:
+    return reference_time - pd.Timedelta(hours=horizon_hours)
 
 
-def build_accum_glob_pattern(reference_time_utc: pd.Timestamp, horizon_hours: int, horizon_label: str) -> str:
-    window_start_utc = build_window_start_utc(reference_time_utc, horizon_hours)
-    return f"*_{window_start_utc:%Y%m%d}_{window_start_utc:%H%M}_{horizon_label}.csv"
+def build_accum_glob_pattern(reference_time: pd.Timestamp, horizon_hours: int, horizon_label: str) -> str:
+    window_start = build_window_start(reference_time, horizon_hours)
+    return f"*_{window_start:%Y%m%d}_{window_start:%H%M}_{horizon_label}.csv"
 
 
-def build_interp_filename(reference_time_utc: pd.Timestamp, horizon_hours: int, horizon_label: str) -> str:
-    window_start_utc = build_window_start_utc(reference_time_utc, horizon_hours)
-    return f"accum_{window_start_utc:%Y%m%d}_{window_start_utc:%H%M}_{horizon_label}.tif"
+def build_interp_filename(reference_time: pd.Timestamp, horizon_hours: int, horizon_label: str) -> str:
+    window_start = build_window_start(reference_time, horizon_hours)
+    return f"accum_{window_start:%Y%m%d}_{window_start:%H%M}_{horizon_label}.tif"
 
 
 def load_horizon_accum(
     accum_dir: Path,
     *,
-    reference_time_utc: pd.Timestamp,
+    reference_time: pd.Timestamp,
     horizon_label: str,
     horizon_hours: int,
 ) -> tuple[pd.DataFrame, list[str]]:
-    pattern = build_accum_glob_pattern(reference_time_utc, horizon_hours, horizon_label)
+    pattern = build_accum_glob_pattern(reference_time, horizon_hours, horizon_label)
     matched_files = sorted(accum_dir.glob(pattern))
     if not matched_files:
         return pd.DataFrame(columns=["station_id", "rain_acc_mm"]), []
@@ -147,7 +167,7 @@ def save_interp_cog(
     *,
     horizon: str,
     ref_time: pd.Timestamp,
-    window_start_utc: pd.Timestamp,
+    window_start: pd.Timestamp,
     grid_res: float,
 ) -> None:
     profile = {
@@ -169,8 +189,8 @@ def save_interp_cog(
         dst.write(array, 1)
         dst.update_tags(
             horizon=horizon,
-            ref_time=pd.to_datetime(ref_time, utc=True).isoformat(),
-            window_start_utc=pd.to_datetime(window_start_utc, utc=True).isoformat(),
+            ref_time=to_local_timestamp(ref_time).isoformat(),
+            window_start=to_local_timestamp(window_start).isoformat(),
             grid_res_deg=str(grid_res),
         )
 
@@ -181,7 +201,7 @@ def build_interp_layers(
     horizons_h: dict[str, int],
     accum_dir: Path,
     interp_dir: Path,
-    reference_time_utc: pd.Timestamp,
+    reference_time: pd.Timestamp,
     grid_res: float = 0.1,
     power: float = 2.0,
 ) -> tuple[list[str], dict[str, list[str]]]:
@@ -193,7 +213,7 @@ def build_interp_layers(
     for horizon_label, horizon_hours in horizons_h.items():
         accum_rows, used_files = load_horizon_accum(
             accum_dir,
-            reference_time_utc=reference_time_utc,
+            reference_time=reference_time,
             horizon_label=horizon_label,
             horizon_hours=int(horizon_hours),
         )
@@ -207,15 +227,15 @@ def build_interp_layers(
             continue
 
         raster, transform = idw_interpolate(points, "rain_acc_mm", grid_res=grid_res, power=power)
-        out_name = build_interp_filename(reference_time_utc, int(horizon_hours), horizon_label)
+        out_name = build_interp_filename(reference_time, int(horizon_hours), horizon_label)
         out_path = interp_dir / out_name
         save_interp_cog(
             raster,
             transform,
             out_path,
             horizon=horizon_label,
-            ref_time=reference_time_utc,
-            window_start_utc=build_window_start_utc(reference_time_utc, int(horizon_hours)),
+            ref_time=reference_time,
+            window_start=build_window_start(reference_time, int(horizon_hours)),
             grid_res=grid_res,
         )
         generated_layers.append(out_name)
@@ -235,7 +255,9 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
     interp_dir = resolve_path(config.get("paths", {}).get("interp_dir", str(DEFAULT_INTERP_DIR)))
     grid_res = float(config.get("interpolation", {}).get("grid_res_deg", 0.1))
     power = float(config.get("interpolation", {}).get("power", 2.0))
-    reference_time_utc = pd.to_datetime(config["runtime"]["reference_time_utc"], utc=True)
+    reference_time = to_local_timestamp(get_runtime_reference_time(config))
+    if pd.isna(reference_time):
+        raise ValueError("runtime.reference_time inválido.")
     selected_basins = list(config.get("basins", {}).get("selected_ids", []))
     detailed_basins = set(config.get("basins", {}).get("detailed_stats_ids", []))
 
@@ -244,7 +266,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         horizons_h=horizons_h,
         accum_dir=accum_dir,
         interp_dir=interp_dir,
-        reference_time_utc=reference_time_utc,
+        reference_time=reference_time,
         grid_res=grid_res,
         power=power,
     )
@@ -255,7 +277,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
             "run_id": config["runtime"]["run_id"],
             "mode": config.get("run", {}).get("mode", "operational"),
             "event_name": config.get("run", {}).get("event_name"),
-            "reference_time_utc": config["runtime"]["reference_time_utc"],
+            "reference_time": get_runtime_reference_time(config),
             "accum_horizons_h": horizons_h,
             "grid_res_deg": grid_res,
             "idw_power": power,
@@ -273,7 +295,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
                 "schema_version": config.get("schema_version", "1.0"),
                 "step": "interpolate",
                 "run_id": config["runtime"]["run_id"],
-                "reference_time_utc": config["runtime"]["reference_time_utc"],
+                "reference_time": get_runtime_reference_time(config),
                 "basins": [
                     {
                         "basin_id": basin_id,

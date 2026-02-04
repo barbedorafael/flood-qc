@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "schema_version": "1.0",
     "run": {
         "mode": "operational",
-        "reference_time_utc": None,
+        "reference_time": None,
         "event_name": None,
     },
     "ingest": {
@@ -93,7 +93,7 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 def _parse_reference_time(value: Any) -> datetime:
     if value in (None, "", "now"):
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         return now.replace(minute=0, second=0, microsecond=0)
 
     if isinstance(value, datetime):
@@ -104,9 +104,9 @@ def _parse_reference_time(value: Any) -> datetime:
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
 
 
 def _build_accum_horizons(hours: list[Any]) -> dict[str, int]:
@@ -136,6 +136,17 @@ def resolve_paths(raw_paths: list[str], *, root: Path = REPO_ROOT) -> list[Path]
 def get_report_dir(config: dict[str, Any], *, root: Path = REPO_ROOT) -> Path:
     base = config.get("outputs", {}).get("reports_base_dir", "data/reports")
     return resolve_path(base, root=root) / config["runtime"]["run_id"]
+
+
+def get_runtime_reference_time(config: dict[str, Any]) -> str:
+    runtime = config.get("runtime", {})
+    value = runtime.get("reference_time")
+    if value not in (None, ""):
+        return str(value)
+    legacy_value = runtime.get("reference_time_utc")
+    if legacy_value not in (None, ""):
+        return str(legacy_value)
+    raise KeyError("runtime.reference_time não encontrado.")
 
 
 def _json_default(obj: Any) -> Any:
@@ -173,15 +184,21 @@ def load_runtime_config(
         config = deep_merge(config, _load_yaml(event_path))
         config.setdefault("run", {})["event_name"] = effective_event
 
-    reference_dt = _parse_reference_time(config.get("run", {}).get("reference_time_utc"))
-    run_id = reference_dt.strftime("%Y%m%dT%H%M%SZ")
+    run_config = config.setdefault("run", {})
+    legacy_reference_time = run_config.pop("reference_time_utc", None)
+    if run_config.get("reference_time") in (None, "") and legacy_reference_time not in (None, ""):
+        run_config["reference_time"] = legacy_reference_time
+
+    reference_dt = _parse_reference_time(run_config.get("reference_time"))
+    run_config["reference_time"] = reference_dt.isoformat()
+    run_id = reference_dt.strftime("%Y%m%dT%H%M%S")
     if config.get("run", {}).get("event_name"):
         run_id = f"{run_id}_{config['run']['event_name']}"
 
     config["runtime"] = {
-        "reference_time_utc": reference_dt.isoformat().replace("+00:00", "Z"),
+        "reference_time": reference_dt.isoformat(),
         "run_id": run_id,
-        "loaded_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "loaded_at": datetime.now().replace(microsecond=0).isoformat(),
         "config_dir": str(config_dir),
         "accum_horizons_h": _build_accum_horizons(config.get("windows", {}).get("accum_hours", [])),
     }

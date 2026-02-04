@@ -9,7 +9,14 @@ import pandas as pd
 import requests
 import xml.etree.ElementTree as ET
 
-from config_loader import load_runtime_config, resolve_paths, resolve_path, get_report_dir, write_json
+from config_loader import (
+    load_runtime_config,
+    resolve_paths,
+    resolve_path,
+    get_report_dir,
+    write_json,
+    get_runtime_reference_time,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
@@ -78,26 +85,26 @@ def parse_response(text: str) -> pd.DataFrame:
 def fetch_station_data(
     station: str,
     *,
-    start_time_utc: datetime,
-    end_time_utc: datetime,
+    start_time: datetime,
+    end_time: datetime,
     base_url: str,
     timeout_seconds: float,
 ) -> pd.DataFrame:
     params = {
         "codEstacao": station,
-        "dataInicio": start_time_utc.strftime("%d/%m/%Y %H:%M:%S"),
-        "dataFim": end_time_utc.strftime("%d/%m/%Y %H:%M:%S"),
+        "dataInicio": start_time.strftime("%d/%m/%Y %H:%M:%S"),
+        "dataFim": end_time.strftime("%d/%m/%Y %H:%M:%S"),
     }
     response = requests.get(base_url, params=params, timeout=timeout_seconds)
     response.raise_for_status()
     return parse_response(response.text)
 
 
-def iter_request_windows(reference_time_utc: datetime, request_days: int) -> Iterable[tuple[datetime, datetime]]:
+def iter_request_windows(reference_time: datetime, request_days: int) -> Iterable[tuple[datetime, datetime]]:
     """
     Divide o intervalo total em janelas de 24h sem sobreposição.
     """
-    start_time = reference_time_utc - timedelta(days=request_days)
+    start_time = reference_time - timedelta(days=request_days)
     window_delta = timedelta(hours=REQUEST_WINDOW_HOURS)
     one_second = timedelta(seconds=1)
 
@@ -105,7 +112,7 @@ def iter_request_windows(reference_time_utc: datetime, request_days: int) -> Ite
         window_start = start_time + (window_index * window_delta)
         window_end = window_start + window_delta - one_second
         if window_index == request_days - 1:
-            window_end = reference_time_utc
+            window_end = reference_time
         yield window_start, window_end
 
 
@@ -158,8 +165,10 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         return
     timeout_seconds = float(config.get("ingest", {}).get("timeout_seconds", 15))
     output_dir = resolve_path(config.get("paths", {}).get("telemetry_dir", "data/telemetria"))
-    reference_time_utc = pd.to_datetime(config["runtime"]["reference_time_utc"]).to_pydatetime()
-    request_windows = list(iter_request_windows(reference_time_utc, request_days))
+    reference_time = pd.to_datetime(get_runtime_reference_time(config)).to_pydatetime()
+    if pd.isna(reference_time):
+        raise ValueError("runtime.reference_time inválido.")
+    request_windows = list(iter_request_windows(reference_time, request_days))
     include_station_details = bool(config.get("outputs", {}).get("write_station_json", True))
     removed_entries = clear_telemetry_dir(output_dir)
     print(f"Diretório de telemetria limpo: {output_dir} ({removed_entries} entradas removidas)")
@@ -169,7 +178,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         "run_id": config["runtime"]["run_id"],
         "mode": config.get("run", {}).get("mode", "operational"),
         "event_name": config.get("run", {}).get("event_name"),
-        "reference_time_utc": config["runtime"]["reference_time_utc"],
+        "reference_time": get_runtime_reference_time(config),
         "request_days": request_days,
         "request_window_hours": REQUEST_WINDOW_HOURS,
         "stations_total": len(stations),
@@ -186,11 +195,11 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
         records_fetched = 0
         records_written = 0
         try:
-            for start_time_utc, end_time_utc in request_windows:
+            for start_time, end_time in request_windows:
                 df = fetch_station_data(
                     station,
-                    start_time_utc=start_time_utc,
-                    end_time_utc=end_time_utc,
+                    start_time=start_time,
+                    end_time=end_time,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
                 )
