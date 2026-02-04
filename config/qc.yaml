@@ -3,11 +3,11 @@ qc:
     min_mm_h: 0.0
     max_mm_h: 120.0
   level:
-    min_m: -2.0
-    max_m: 20.0
-    max_step_m_h: 1.5
+    min_cm: -1e4
+    max_cm: 1e6
+    max_step_cm_h: 150.0
   flow:
     min_m3s: 0.0
-    max_m3s: 50000.0
+    max_m3s: 1e7
   gap_fill:
     max_gap_hours: 3

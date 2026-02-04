@@ -101,6 +101,7 @@ Parâmetros mais úteis:
 - `windows.forecast_days`: janelas de previsão (1, 3, 10, 30 etc).
 - `windows.accum_hours`: janelas de acumulado (24, 72, 240, 720 etc).
 - `interpolation.grid_res_deg` e `interpolation.power`: parâmetros IDW.
+- `qc.level.min_cm`, `qc.level.max_cm`, `qc.level.max_step_cm_h`: limites de nível em centímetros.
 - `basins.selected_ids` e `basins.detailed_stats_ids`.
 
 Observação:
@@ -146,6 +147,7 @@ Observações:
 - Janela de coleta vem de `config/default.yaml` (`ingest.request_days`).
 - O script limpa `data/telemetria/` no início do run e grava um CSV por estação.
 - Dentro de cada arquivo, os registros são ordenados por tempo e deduplicados por `station_id + datetime`.
+- `level` é mantido em centímetros (`cm`) conforme retorno da telemetria ANA.
 
 ### 3) `src/accumulate.py`
 
@@ -178,7 +180,7 @@ Observações:
 
 Dashboard Streamlit para inspeção rápida:
 - mapa de estações;
-- série temporal (chuva e nível);
+- série temporal (chuva em mm e nível em cm);
 - camada raster interpolada com transparência ajustável.
 
 ## Contrato de dados (estado atual)
@@ -189,6 +191,7 @@ Dashboard Streamlit para inspeção rápida:
 
 ### `data/telemetria/*.csv`
 - Colunas: `station_id`, `datetime`, `rain`, `level`, `flow`
+- Unidades: `rain` em `mm`, `level` em `cm`, `flow` em `m3/s`
 - Frequência original da API (depois agregada para horário no script de acumulado)
 
 ### `data/accum/*.csv`
@@ -274,3 +277,4 @@ Exemplo de `basin_stats.json`:
 - Data de referência do run: `config/run.yaml` → `run.reference_time`.
 - Bacias com análise detalhada: `config/basins.yaml` → `basins.detailed_stats_ids`.
 - Parâmetros de interpolação: `config/default.yaml` → `interpolation`.
+- Limites de nível (cm): `config/qc.yaml` → `qc.level` (`min_cm`, `max_cm`, `max_step_cm_h`).

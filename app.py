@@ -306,7 +306,7 @@ def time_series_chart(df: pd.DataFrame, station_id: str, days: int):
     fig.add_scatter(
         x=df["datetime"],
         y=df["level"],
-        name="Nível (m)",
+        name="Nível (cm)",
         mode="lines+markers",
         line=dict(color="#0b7285", width=2),
         marker=dict(size=4),
@@ -335,7 +335,7 @@ def metric_cards(df: pd.DataFrame):
     cols = st.columns(3)
     cols[0].markdown(f"<div class='metric-card'><div>Última leitura</div><div style='font-size:1.4rem'>{last['datetime']:%d/%m %H:%M}</div></div>", unsafe_allow_html=True)
     cols[1].markdown(f"<div class='metric-card'><div>Chuva 24h</div><div style='font-size:1.4rem'>{rain_24h:.1f} mm</div></div>", unsafe_allow_html=True)
-    level_txt = f"{last['level']:.2f} m" if pd.notna(last.get('level')) else "—"
+    level_txt = f"{last['level']:.1f} cm" if pd.notna(last.get('level')) else "—"
     cols[2].markdown(f"<div class='metric-card'><div>Nível</div><div style='font-size:1.4rem'>{level_txt}</div></div>", unsafe_allow_html=True)
 
 

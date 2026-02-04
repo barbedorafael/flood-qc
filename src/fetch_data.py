@@ -74,7 +74,7 @@ def parse_response(text: str) -> pd.DataFrame:
         entry = {
             "station_id": station.strip(),
             "datetime": timestamp,
-            "level": parse_float(data.findtext("Nivel")),
+            "level": parse_float(data.findtext("Nivel")),  # Nível em cm (mantido sem conversão).
             "rain": parse_float(data.findtext("Chuva")),
             "flow": parse_float(data.findtext("Vazao")),
         }

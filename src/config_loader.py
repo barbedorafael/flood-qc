@@ -63,7 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "qc": {
         "rain": {"min_mm_h": 0.0, "max_mm_h": 120.0},
-        "level": {"min_m": -2.0, "max_m": 20.0, "max_step_m_h": 1.5},
+        "level": {"min_cm": -200.0, "max_cm": 2000.0, "max_step_cm_h": 150.0},
         "flow": {"min_m3s": 0.0, "max_m3s": 50000.0},
         "gap_fill": {"max_gap_hours": 3},
     },
@@ -124,6 +124,32 @@ def _build_accum_horizons(hours: list[Any]) -> dict[str, int]:
     if not horizons:
         horizons = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
     return horizons
+
+
+def _normalize_level_qc_units(config: dict[str, Any]) -> None:
+    qc = config.setdefault("qc", {})
+    if not isinstance(qc, dict):
+        return
+    level = qc.setdefault("level", {})
+    if not isinstance(level, dict):
+        return
+
+    legacy_to_cm = {
+        "min_m": "min_cm",
+        "max_m": "max_cm",
+        "max_step_m_h": "max_step_cm_h",
+    }
+    for legacy_key, cm_key in legacy_to_cm.items():
+        if cm_key in level or legacy_key not in level:
+            continue
+        raw = level.get(legacy_key)
+        try:
+            level[cm_key] = float(raw) * 100.0
+        except (TypeError, ValueError):
+            level[cm_key] = raw
+
+    for legacy_key in legacy_to_cm:
+        level.pop(legacy_key, None)
 
 
 def resolve_path(raw_path: str, *, root: Path = REPO_ROOT) -> Path:
@@ -190,6 +216,7 @@ def load_runtime_config(
     legacy_reference_time = run_config.pop("reference_time_utc", None)
     if run_config.get("reference_time") in (None, "") and legacy_reference_time not in (None, ""):
         run_config["reference_time"] = legacy_reference_time
+    _normalize_level_qc_units(config)
 
     reference_dt = _parse_reference_time(run_config.get("reference_time"))
     run_config["reference_time"] = reference_dt.isoformat()
