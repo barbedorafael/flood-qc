@@ -36,7 +36,7 @@ LOCAL_TZ = DEFAULT_TIMEZONE
 def to_local_timestamp(value: Any) -> pd.Timestamp:
     ts = pd.to_datetime(value, errors="coerce")
     if pd.isna(ts):
-        return pd.NaT
+        return pd.NaT # type: ignore
     if ts.tzinfo is not None:
         ts = ts.tz_convert(LOCAL_TZ)
         ts = ts.tz_localize(None)
