@@ -12,6 +12,7 @@ Saídas:
 """
 
 from datetime import datetime
+from typing import Any
 from pathlib import Path
 
 import pandas as pd
@@ -26,7 +27,7 @@ DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
 LOCAL_TZ = datetime.now().astimezone().tzinfo
 
 
-def to_local_timestamp(value: object) -> pd.Timestamp:
+def to_local_timestamp(value: Any) -> pd.Timestamp:
     ts = pd.to_datetime(value, errors="coerce")
     if pd.isna(ts):
         return pd.NaT
@@ -59,10 +60,10 @@ def compute_accum(df: pd.DataFrame, horizons_h: dict[str, int]) -> pd.DataFrame:
     df["rain"] = pd.to_numeric(df["rain"], errors="coerce").fillna(0.0)
     df = df.sort_values("datetime").set_index("datetime")
 
-    # Resample para 1H somando chuva; faltantes viram 0 para acumular corretamente.
-    hourly = df.resample("1H").agg({"rain": "sum"}).fillna(0.0)
+    # Resample para 1h somando chuva; faltantes viram 0 para acumular corretamente.
+    hourly = df.resample("1h").agg({"rain": "sum"}).fillna(0.0)
     for label, hours in horizons_h.items():
-        hourly[f"rain_acc_{label}"] = hourly["rain"].rolling(f"{hours}H", min_periods=1).sum()
+        hourly[f"rain_acc_{label}"] = hourly["rain"].rolling(f"{hours}h", min_periods=1).sum()
 
     hourly = hourly.drop(columns=["rain"])
     hourly["station_id"] = df["station_id"].iloc[0]
