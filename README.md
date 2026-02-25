@@ -11,8 +11,8 @@ Arquitetura intencionalmente enxuta:
 
 - Inventário mínimo de estações (`src/station_inventory.py`).
 - Coleta de telemetria ANA (chuva/nível/vazão) (`src/fetch_data.py`).
-- Cálculo de chuva acumulada por estação (`src/accumulate.py`).
-- Interpolação IDW a partir dos acumulados (`src/interpolate.py`).
+- Cálculo de chuva acumulada em CSV consolidado (`src/accumulate.py`).
+- Interpolação IDW a partir do CSV consolidado (`src/interpolate.py`).
 - Dashboard exploratório em desenvolvimento (`app.py`).
 
 ## Próximos passos
@@ -30,7 +30,7 @@ Arquitetura intencionalmente enxuta:
 - `data/` saídas intermediárias e prontas para uso.
   - `estacoes_nivel.csv`, `estacoes_pluv.csv`
   - `telemetria/*.csv`
-  - `accum/*.csv`
+  - `accum/acc_*.csv`
   - `interp/*.tif`
   - `reports/<run_id>/*.json`
 
@@ -69,8 +69,6 @@ python src/fetch_data.py
 python src/accumulate.py
 python src/interpolate.py
 ```
-
-Compatibilidade: `python src/accumulate_interpolate.py` ainda funciona e executa as duas etapas em sequência.
 
 Para replay de evento:
 
@@ -151,29 +149,34 @@ Observações:
 
 ### 3) `src/accumulate.py`
 
-Processa a telemetria de chuva e gera séries acumuladas por estação.
+Processa a telemetria de chuva e gera um único CSV consolidado para todas as estações.
 
 Horizontes atuais:
 - 24h, 72h (3 dias), 240h (10 dias), 720h (30 dias)
 
 Saídas:
-- `data/accum/{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`
+- `data/accum/acc_{yyyymmdd}_{hhmm}.csv`
 
 Observações:
-- Resample horário com soma de chuva.
-- Valores faltantes são tratados como `0` no cálculo de acumulado.
+- O script constrói um dataframe único com colunas:
+  `station_id`, `dt_start`, `dt_end`, `horizon_h`, `rain_acc_mm`.
+- Para cada estação, `dt_end` é a última data/hora disponível da estação.
+- `dt_start = dt_end - horizon_h`.
+- `rain_acc_mm` é a soma no intervalo `(dt_start, dt_end]`, arredondada para 1 casa decimal.
 - Horizontes vêm da configuração (`windows.accum_hours`).
-- `yyyymmdd/hhmm` representam `reference_time - horizonte`.
+- `yyyymmdd/hhmm` no nome do arquivo representam `max(dt_end)` do dataframe consolidado.
 
 ### 4) `src/interpolate.py`
 
-Consome os acumulados e gera rasters interpolados por IDW.
+Consome o CSV consolidado de acumulados e gera rasters interpolados por IDW.
 
 Saídas:
 - `data/interp/accum_{yyyymmdd}_{hhmm}_{horizonte}.tif`
 
 Observações:
-- Lê somente CSVs no padrão `{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`.
+- Lê o arquivo no padrão `acc_{yyyymmdd}_{hhmm}.csv` mais recente
+  (priorizando `<= run.reference_time`; se não houver, usa o mais recente disponível).
+- Filtra o dataframe por `horizon_h` para montar cada camada.
 - Parâmetros IDW vêm de `interpolation.grid_res_deg` e `interpolation.power`.
 
 ### 5) `app.py`
@@ -195,8 +198,8 @@ Dashboard Streamlit para inspeção rápida:
 - Frequência original da API (depois agregada para horário no script de acumulado)
 
 ### `data/accum/*.csv`
-- Nome: `{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv`
-- Colunas: `station_id`, `reference_time`, `window_start`, `station_latest_time`, `horizon_label`, `horizon_hours`, `rain_acc_mm`
+- Nome: `acc_{yyyymmdd}_{hhmm}.csv`
+- Colunas: `station_id`, `dt_start`, `dt_end`, `horizon_h`, `rain_acc_mm`
 
 ### `data/interp/*.tif`
 - COG em `EPSG:4326`
@@ -207,7 +210,6 @@ Dashboard Streamlit para inspeção rápida:
 Cada run gera pasta `data/reports/<run_id>/` com:
 - `config_snapshot.json`: configuração efetivamente usada no run.
 - `fetch_data_summary.json`: status por estação na coleta ANA.
-- `accumulate_summary.json`: resumo da etapa de acumulado por estação.
 - `interpolate_summary.json`: resumo da etapa de interpolação raster.
 - `basin_stats.json`: lista de bacias selecionadas e marcação de análise detalhada (estrutura base para relatório).
 
@@ -226,31 +228,21 @@ Exemplo de `fetch_data_summary.json`:
 }
 ```
 
-Exemplo de `accumulate_summary.json`:
-
-```json
-{
-  "step": "accumulate",
-  "run_id": "20260202T140000",
-  "accum_horizons_h": {"24h": 24, "72h": 72, "240h": 240, "720h": 720},
-  "telemetry_files_found": 287,
-  "stations_with_accum": 287,
-  "accum_files_generated": ["83970000_20260201_1400_24h.csv", "..."],
-  "accum_filename_pattern": "{station}_{yyyymmdd}_{hhmm}_{horizon}.csv"
-}
-```
-
 Exemplo de `interpolate_summary.json`:
 
 ```json
 {
   "step": "interpolate",
   "run_id": "20260202T140000",
+  "reference_time": "2026-02-02T14:00:00",
+  "runtime_reference_time": "2026-02-02T14:00:00",
   "accum_horizons_h": {"24h": 24, "72h": 72, "240h": 240, "720h": 720},
   "grid_res_deg": 0.1,
   "idw_power": 2.0,
-  "layers_generated": ["accum_20260201_1400_24h.tif", "accum_20260130_1400_72h.tif"],
-  "accum_input_pattern": "{station}_{yyyymmdd}_{hhmm}_{horizon}.csv",
+  "layers_generated": ["accum_20260202_1400_24h.tif", "accum_20260202_1400_72h.tif"],
+  "used_accum_files_by_horizon": {"24h": ["acc_20260202_1400.csv"], "72h": ["acc_20260202_1400.csv"]},
+  "accum_input_file": "acc_20260202_1400.csv",
+  "accum_input_pattern": "acc_{yyyymmdd}_{hhmm}.csv",
   "interp_output_pattern": "accum_{yyyymmdd}_{hhmm}_{horizon}.tif"
 }
 ```
