@@ -1,0 +1,2 @@
+- Consulta a API deve usar o mesmo datetime para todos os dados (demora na aquisição está fazendo coletar dados em períodos ligeiramete diferentes)
+- Implementar consulta aos dados do INMET
