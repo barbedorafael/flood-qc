@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-"""
-Dashboard Streamlit para explorar estações e grades interpoladas de chuva,
-com resumo de disponibilidade dos postos e visualizações temáticas.
-"""
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -33,21 +29,6 @@ DAYS_WINDOW = 30
 NO_DATA_COLOR = "#e64980"
 DATA_ISSUE_COLOR = "#f08c00"
 KIND_COLORS = {"nível": "#0b7285", "chuva": "#364fc7"}
-STATION_VIEW_OPTIONS: dict[str, dict[str, str]] = {
-    "Tipo de estação": {},
-    "Chuva média (mm/h) - 30 dias": {
-        "column": "rain_mean_mm_h",
-        "legend": "Chuva média (mm/h)",
-    },
-    "Chuva acumulada 24h (mm)": {
-        "column": "rain_acc_24h_mm",
-        "legend": "Chuva acumulada 24h (mm)",
-    },
-    "Chuva p90 (mm/h) - 30 dias": {
-        "column": "rain_p90_mm_h",
-        "legend": "Chuva p90 (mm/h)",
-    },
-}
 
 # Paleta fixa Blues (claro→escuro)
 BLUES = np.array(
@@ -317,7 +298,6 @@ def network_summary(stations: pd.DataFrame) -> dict[str, float]:
             "no_data": 0.0,
             "data_issue": 0.0,
             "rain_mean_24h": np.nan,
-            "rain_median_24h": np.nan,
             "rain_p90_24h": np.nan,
         }
 
@@ -336,7 +316,6 @@ def network_summary(stations: pd.DataFrame) -> dict[str, float]:
         "no_data": no_data,
         "data_issue": data_issue,
         "rain_mean_24h": float(rain_values.mean()) if not rain_values.empty else np.nan,
-        "rain_median_24h": float(rain_values.median()) if not rain_values.empty else np.nan,
         "rain_p90_24h": float(rain_values.quantile(0.9)) if not rain_values.empty else np.nan,
     }
 
@@ -349,8 +328,7 @@ def render_network_summary(stations: pd.DataFrame) -> None:
     cols[2].metric("Sem dados", f"{int(summary['no_data'])}")
     cols[3].metric("Falha de dados", f"{int(summary['data_issue'])}")
     cols[4].metric("Média chuva 24h", format_mm(summary["rain_mean_24h"]))
-    cols[5].metric("Mediana chuva 24h", format_mm(summary["rain_median_24h"]))
-    cols[6].metric("P90 chuva 24h", format_mm(summary["rain_p90_24h"]))
+    cols[5].metric("P90 chuva 24h", format_mm(summary["rain_p90_24h"]))
 
 
 def color_ramp_factory(vmin: float, vmax: float, alpha: float):
@@ -388,42 +366,6 @@ def extract_horizon_label(layer_name: Optional[str]) -> Optional[str]:
     return None
 
 
-def sanitize_hex_color(value: str) -> str:
-    if value.startswith("#") and len(value) >= 7:
-        return value[:7]
-    return value
-
-
-def add_station_legend(
-    fmap: folium.Map, *, metric_values: pd.Series, legend_title: str
-) -> Optional[cm.LinearColormap]:
-    clean = pd.to_numeric(metric_values, errors="coerce").dropna()
-    if clean.empty:
-        return None
-
-    vmin, vmax = np.nanpercentile(clean, [10, 90])
-    if not np.isfinite(vmin) or not np.isfinite(vmax):
-        return None
-    if abs(vmax - vmin) < 1e-9:
-        vmin -= 0.5
-        vmax += 0.5
-
-    station_colormap = cm.LinearColormap(
-        colors=["#f7fbff", "#9ecae1", "#4292c6", "#08519c"],
-        vmin=float(vmin),
-        vmax=float(vmax),
-    )
-    station_colormap.caption = legend_title
-    station_colormap.add_to(fmap)
-    return station_colormap
-
-
-def format_popup_metric(value: object, suffix: str) -> str:
-    if value is None or pd.isna(value):
-        return "—"
-    return f"{float(value):.1f} {suffix}"
-
-
 def render_selected_station_context(row: Optional[pd.Series], station_id: str) -> None:
     if row is None:
         st.markdown(f"### Posto selecionado: {station_id}")
@@ -441,15 +383,6 @@ def render_selected_station_context(row: Optional[pd.Series], station_id: str) -
 
     st.markdown(f"### Posto selecionado: {station_name}")
     st.caption(f"Código: {station_id} | Tipo: {kind} | Status: {status}")
-    st.caption(
-        " | ".join(
-            [
-                f"Chuva média: {format_popup_metric(row.get('rain_mean_mm_h', np.nan), 'mm/h')}",
-                f"Chuva acum. 24h: {format_popup_metric(row.get('rain_acc_24h_mm', np.nan), 'mm')}",
-                f"Chuva p90: {format_popup_metric(row.get('rain_p90_mm_h', np.nan), 'mm/h')}",
-            ]
-        )
-    )
     if reason:
         st.caption(f"Obs: {reason}")
 
@@ -509,7 +442,6 @@ def build_map(
     selected_layer: Optional[str],
     opacity: float,
     stations: pd.DataFrame,
-    station_view_mode: str,
 ) -> folium.Map:
     center = (
         [stations["lat"].mean(), stations["lon"].mean()]
@@ -547,23 +479,12 @@ def build_map(
                 )
                 RasterClickPopup(data, (west, south, east, north), selected_layer).add_to(fmap)
 
-    station_view_cfg = STATION_VIEW_OPTIONS.get(station_view_mode, {})
-    station_metric_col = station_view_cfg.get("column")
-    station_colormap = None
-    if station_metric_col:
-        station_colormap = add_station_legend(
-            fmap,
-            metric_values=stations.loc[stations["status"] != "no_data", station_metric_col],
-            legend_title=station_view_cfg["legend"],
-        )
-
     station_layer = folium.FeatureGroup(name="Postos com dados", show=True)
     no_data_layer = folium.FeatureGroup(name="Postos sem dados", show=True)
     for row in stations.itertuples():
         station_name = row.name if row.name else "sem nome"
         tooltip = f"{row.station_id} — {station_name}"
         status = getattr(row, "status", "no_data")
-        popup_html = station_name
 
         if status == "no_data":
             folium.CircleMarker(
@@ -575,22 +496,13 @@ def build_map(
                 weight=1,
                 fill_opacity=0.55,
                 tooltip=tooltip,
-                popup=popup_html,
+                bubbling_mouse_events=False,
             ).add_to(no_data_layer)
             continue
 
-        if station_metric_col and station_colormap is not None:
-            metric_value = getattr(row, station_metric_col, np.nan)
-            if pd.notna(metric_value):
-                marker_color = sanitize_hex_color(station_colormap(float(metric_value)))
-            elif status == "data_issue":
-                marker_color = DATA_ISSUE_COLOR
-            else:
-                marker_color = "#adb5bd"
-        else:
-            marker_color = KIND_COLORS.get(getattr(row, "kind", ""), "#364fc7")
-            if status == "data_issue":
-                marker_color = DATA_ISSUE_COLOR
+        marker_color = KIND_COLORS.get(getattr(row, "kind", ""), "#364fc7")
+        if status == "data_issue":
+            marker_color = DATA_ISSUE_COLOR
 
         folium.CircleMarker(
             location=[row.lat, row.lon],
@@ -601,7 +513,7 @@ def build_map(
             weight=1,
             fill_opacity=0.9 if status == "ok" else 0.75,
             tooltip=tooltip,
-            popup=popup_html,
+            bubbling_mouse_events=False,
         ).add_to(station_layer)
 
     station_layer.add_to(fmap)
@@ -659,14 +571,38 @@ def metric_cards(df: pd.DataFrame):
     if df.empty:
         st.write("Nenhum dado recente.")
         return
-    last = df.dropna(subset=["datetime"]).sort_values("datetime").tail(1).iloc[0]
-    rain_24h = df[df["datetime"] >= df["datetime"].max() - timedelta(hours=24)]["rain"].sum(min_count=1)
-    cols = st.columns(3)
-    cols[0].markdown(f"<div class='metric-card'><div>Última leitura</div><div style='font-size:1.4rem'>{last['datetime']:%d/%m %H:%M}</div></div>", unsafe_allow_html=True)
-    rain_txt = f"{rain_24h:.1f} mm" if pd.notna(rain_24h) else "—"
-    cols[1].markdown(f"<div class='metric-card'><div>Chuva 24h</div><div style='font-size:1.4rem'>{rain_txt}</div></div>", unsafe_allow_html=True)
-    level_txt = f"{last['level']:.1f} cm" if pd.notna(last.get('level')) else "—"
-    cols[2].markdown(f"<div class='metric-card'><div>Nível</div><div style='font-size:1.4rem'>{level_txt}</div></div>", unsafe_allow_html=True)
+    recent = df.dropna(subset=["datetime"]).sort_values("datetime")
+    if recent.empty:
+        st.write("Nenhum dado recente.")
+        return
+
+    last = recent.tail(1).iloc[0]
+    latest_time = recent["datetime"].max()
+    rain_12h = recent[recent["datetime"] >= latest_time - timedelta(hours=12)]["rain"].sum(min_count=1)
+    rain_24h = recent[recent["datetime"] >= latest_time - timedelta(hours=24)]["rain"].sum(min_count=1)
+    rain_72h = recent[recent["datetime"] >= latest_time - timedelta(hours=72)]["rain"].sum(min_count=1)
+    st.markdown(f"**Última leitura:** {last['datetime']:%d/%m %H:%M}")
+
+    st.markdown("**Chuvas acumuladas**")
+    rains_table = pd.DataFrame(
+        {
+            "Valor": [
+                f"{rain_12h:.1f} mm" if pd.notna(rain_12h) else "—",
+                f"{rain_24h:.1f} mm" if pd.notna(rain_24h) else "—",
+                f"{rain_72h:.1f} mm" if pd.notna(rain_72h) else "—",
+            ]
+        },
+        index=["12h", "24h", "72h"],
+    )
+    st.table(rains_table)
+
+    level_txt = f"{last['level']:.1f} cm" if pd.notna(last.get("level")) else "—"
+    st.markdown("**Estado do nível**")
+    level_table = pd.DataFrame(
+        {"Valor": [level_txt, ""]},
+        index=["atual", "alerta"],
+    )
+    st.table(level_table)
 
 
 stations_df = load_stations()
@@ -679,11 +615,6 @@ st.caption(
 
 with st.sidebar:
     st.subheader("Controles")
-    station_view_mode = st.selectbox(
-        "Visualização dos postos",
-        options=list(STATION_VIEW_OPTIONS.keys()),
-        index=0,
-    )
     available_rasters = [r["name"] for r in list_rasters()]
     selected_layer = st.selectbox("Raster interpolado", options=["(nenhum)"] + available_rasters, index=1 if available_rasters else 0)
     selected_layer = None if selected_layer == "(nenhum)" else selected_layer
@@ -692,7 +623,7 @@ with st.sidebar:
         "**Camadas:** postos sem dados aparecem em rosa fosco e podem ser ligados/desligados no controle do mapa."
     )
 
-base_map = build_map(selected_layer, opacity, stations_context_df, station_view_mode)
+base_map = build_map(selected_layer, opacity, stations_context_df)
 map_state = st_folium(
     base_map,
     height=620,
