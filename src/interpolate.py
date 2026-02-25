@@ -5,14 +5,15 @@ Gera rasters interpolados (IDW) a partir dos CSVs acumulados por estação.
 
 Entradas:
 - data/estacoes_*.csv
-- data/accum/{estacao}_{yyyymmdd}_{hhmm}_{horizonte}.csv
+- data/accum/acc_{yyyymmdd}_{hhmm}.csv
 
 Saídas:
 - data/interp/accum_{yyyymmdd}_{hhmm}_{horizonte}.tif
-  (yyyymmdd/hhmm representam reference_time - horizonte)
+  (yyyymmdd/hhmm representam o horário global da consulta: última data/hora disponível)
 """
 
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
@@ -36,6 +37,7 @@ DEFAULT_INTERP_DIR = DATA_DIR / "interp"
 DEFAULT_STATION_FILES = [DATA_DIR / "estacoes_nivel.csv", DATA_DIR / "estacoes_pluv.csv"]
 DEFAULT_HORIZONS_H = {"24h": 24, "72h": 72, "240h": 240, "720h": 720}
 LOCAL_TZ = DEFAULT_TIMEZONE
+ACCUM_FILE_RE = re.compile(r"^acc_(\d{8})_(\d{4})\.csv$")
 
 
 def to_local_timestamp(value: object) -> pd.Timestamp:
@@ -46,6 +48,14 @@ def to_local_timestamp(value: object) -> pd.Timestamp:
         ts = ts.tz_convert(LOCAL_TZ)
         ts = ts.tz_localize(None)
     return ts
+
+
+def to_local_series(series: pd.Series) -> pd.Series:
+    parsed = pd.to_datetime(series, errors="coerce")
+    if parsed.dt.tz is not None:
+        parsed = parsed.dt.tz_convert(LOCAL_TZ)
+        parsed = parsed.dt.tz_localize(None)
+    return parsed
 
 
 def load_stations(station_files: list[Path]) -> pd.DataFrame:
@@ -68,57 +78,85 @@ def load_stations(station_files: list[Path]) -> pd.DataFrame:
     return df.dropna(subset=["lat", "lon"])
 
 
-def build_window_start(reference_time: pd.Timestamp, horizon_hours: int) -> pd.Timestamp:
-    return reference_time - pd.Timedelta(hours=horizon_hours)
+def build_window_start(data_time: pd.Timestamp, horizon_hours: int) -> pd.Timestamp:
+    return data_time - pd.Timedelta(hours=horizon_hours)
 
 
-def build_accum_glob_pattern(reference_time: pd.Timestamp, horizon_hours: int, horizon_label: str) -> str:
-    window_start = build_window_start(reference_time, horizon_hours)
-    return f"*_{window_start:%Y%m%d}_{window_start:%H%M}_{horizon_label}.csv"
+def build_interp_filename(data_time: pd.Timestamp, horizon_label: str) -> str:
+    return f"accum_{data_time:%Y%m%d}_{data_time:%H%M}_{horizon_label}.tif"
 
 
-def build_interp_filename(reference_time: pd.Timestamp, horizon_hours: int, horizon_label: str) -> str:
-    window_start = build_window_start(reference_time, horizon_hours)
-    return f"accum_{window_start:%Y%m%d}_{window_start:%H%M}_{horizon_label}.tif"
+def normalize_horizons(config_horizons: object) -> dict[str, int]:
+    if isinstance(config_horizons, dict):
+        raw_items = list(config_horizons.items())
+    elif isinstance(config_horizons, (list, tuple)):
+        raw_items = [(f"{value}h", value) for value in config_horizons]
+    else:
+        raw_items = list(DEFAULT_HORIZONS_H.items())
 
-
-def load_horizon_accum(
-    accum_dir: Path,
-    *,
-    reference_time: pd.Timestamp,
-    horizon_label: str,
-    horizon_hours: int,
-) -> tuple[pd.DataFrame, list[str]]:
-    pattern = build_accum_glob_pattern(reference_time, horizon_hours, horizon_label)
-    matched_files = sorted(accum_dir.glob(pattern))
-    if not matched_files:
-        return pd.DataFrame(columns=["station_id", "rain_acc_mm"]), []
-
-    rows: list[pd.DataFrame] = []
-    used_files: list[str] = []
-    for csv_path in matched_files:
+    horizons: dict[str, int] = {}
+    for label, value in raw_items:
         try:
-            df = pd.read_csv(csv_path, usecols=["station_id", "rain_acc_mm"])
-        except (FileNotFoundError, ValueError):
+            hours = int(value)
+        except (TypeError, ValueError):
             continue
-        if df.empty:
+        if hours <= 0:
             continue
+        label_text = str(label).strip() or f"{hours}h"
+        horizons[label_text] = hours
 
-        df["station_id"] = df["station_id"].astype(str)
-        df["rain_acc_mm"] = pd.to_numeric(df["rain_acc_mm"], errors="coerce")
-        df = df.dropna(subset=["station_id", "rain_acc_mm"])
-        if df.empty:
+    if not horizons:
+        return dict(DEFAULT_HORIZONS_H)
+    return horizons
+
+
+def parse_accum_file_time(path: Path) -> pd.Timestamp:
+    match = ACCUM_FILE_RE.match(path.name)
+    if not match:
+        return pd.NaT
+    date_part, hour_part = match.groups()
+    return to_local_timestamp(pd.to_datetime(f"{date_part}{hour_part}", format="%Y%m%d%H%M", errors="coerce"))
+
+
+def pick_accum_file(accum_dir: Path, runtime_reference_time: pd.Timestamp) -> Path | None:
+    candidates: list[tuple[pd.Timestamp, Path]] = []
+    for path in accum_dir.glob("acc_*.csv"):
+        ts = parse_accum_file_time(path)
+        if pd.isna(ts):
             continue
+        candidates.append((ts, path))
+    if not candidates:
+        return None
 
-        rows.append(df[["station_id", "rain_acc_mm"]])
-        used_files.append(csv_path.name)
+    eligible = [(ts, path) for ts, path in candidates if ts <= runtime_reference_time]
+    selected = eligible if eligible else candidates
+    selected.sort(key=lambda item: item[0], reverse=True)
+    return selected[0][1]
 
-    if not rows:
-        return pd.DataFrame(columns=["station_id", "rain_acc_mm"]), []
 
-    out = pd.concat(rows, ignore_index=True)
-    out = out.drop_duplicates(subset="station_id", keep="last")
-    return out, used_files
+def load_accum_table(accum_csv_path: Path) -> pd.DataFrame:
+    try:
+        df = pd.read_csv(
+            accum_csv_path,
+            usecols=["station_id", "dt_start", "dt_end", "horizon_h", "rain_acc_mm"],
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(f"CSV acumulado inválido: {accum_csv_path}") from exc
+
+    if df.empty:
+        return pd.DataFrame(columns=["station_id", "dt_start", "dt_end", "horizon_h", "rain_acc_mm"])
+
+    df["station_id"] = df["station_id"].astype(str)
+    df["dt_start"] = to_local_series(df["dt_start"])
+    df["dt_end"] = to_local_series(df["dt_end"])
+    df["horizon_h"] = pd.to_numeric(df["horizon_h"], errors="coerce")
+    df["rain_acc_mm"] = pd.to_numeric(df["rain_acc_mm"], errors="coerce")
+    df = df.dropna(subset=["station_id", "dt_end", "horizon_h", "rain_acc_mm"])
+    if df.empty:
+        return pd.DataFrame(columns=["station_id", "dt_start", "dt_end", "horizon_h", "rain_acc_mm"])
+
+    df["horizon_h"] = df["horizon_h"].astype(int)
+    return df
 
 
 def idw_interpolate(
@@ -198,9 +236,10 @@ def build_interp_layers(
     *,
     stations: pd.DataFrame,
     horizons_h: dict[str, int],
-    accum_dir: Path,
+    accum_table: pd.DataFrame,
+    accum_file_name: str,
     interp_dir: Path,
-    reference_time: pd.Timestamp,
+    data_time: pd.Timestamp,
     grid_res: float = 0.1,
     power: float = 2.0,
 ) -> tuple[list[str], dict[str, list[str]]]:
@@ -210,12 +249,10 @@ def build_interp_layers(
     used_accum_files_by_horizon: dict[str, list[str]] = {}
 
     for horizon_label, horizon_hours in horizons_h.items():
-        accum_rows, used_files = load_horizon_accum(
-            accum_dir,
-            reference_time=reference_time,
-            horizon_label=horizon_label,
-            horizon_hours=int(horizon_hours),
-        )
+        accum_rows = accum_table.loc[
+            accum_table["horizon_h"] == int(horizon_hours), ["station_id", "rain_acc_mm"]
+        ].copy()
+        used_files = [accum_file_name] if not accum_rows.empty else []
         used_accum_files_by_horizon[horizon_label] = used_files
         if accum_rows.empty:
             continue
@@ -226,15 +263,15 @@ def build_interp_layers(
             continue
 
         raster, transform = idw_interpolate(points, "rain_acc_mm", grid_res=grid_res, power=power)
-        out_name = build_interp_filename(reference_time, int(horizon_hours), horizon_label)
+        out_name = build_interp_filename(data_time, horizon_label)
         out_path = interp_dir / out_name
         save_interp_cog(
             raster,
             transform,
             out_path,
             horizon=horizon_label,
-            ref_time=reference_time,
-            window_start=build_window_start(reference_time, int(horizon_hours)),
+            ref_time=data_time,
+            window_start=build_window_start(data_time, int(horizon_hours)),
             grid_res=grid_res,
         )
         generated_layers.append(out_name)
@@ -246,7 +283,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
     resolved_config_dir = Path(config_dir) if config_dir is not None else None
     config = load_runtime_config(config_dir=resolved_config_dir, event_name=event_name)
 
-    horizons_h = config.get("runtime", {}).get("accum_horizons_h", DEFAULT_HORIZONS_H)
+    horizons_h = normalize_horizons(config.get("runtime", {}).get("accum_horizons_h", DEFAULT_HORIZONS_H))
     station_files = config.get("paths", {}).get("station_files", [])
     stations = load_stations(resolve_paths(station_files) if station_files else DEFAULT_STATION_FILES)
 
@@ -254,18 +291,34 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
     interp_dir = resolve_path(config.get("paths", {}).get("interp_dir", str(DEFAULT_INTERP_DIR)))
     grid_res = float(config.get("interpolation", {}).get("grid_res_deg", 0.1))
     power = float(config.get("interpolation", {}).get("power", 2.0))
-    reference_time = to_local_timestamp(get_runtime_reference_time(config))
-    if pd.isna(reference_time):
+    runtime_reference_time = to_local_timestamp(get_runtime_reference_time(config))
+    if pd.isna(runtime_reference_time):
         raise ValueError("runtime.reference_time inválido.")
+
+    accum_csv_path = pick_accum_file(accum_dir, runtime_reference_time)
+    if accum_csv_path is None:
+        raise FileNotFoundError("Nenhum CSV acumulado no padrão acc_yyyymmdd_hhmm.csv encontrado.")
+
+    accum_table = load_accum_table(accum_csv_path)
+    if accum_table.empty:
+        raise ValueError(f"CSV acumulado sem linhas válidas: {accum_csv_path}")
+
+    data_time = to_local_timestamp(accum_table["dt_end"].max())
+    if pd.isna(data_time):
+        data_time = parse_accum_file_time(accum_csv_path)
+    if pd.isna(data_time):
+        raise ValueError(f"Não foi possível determinar data/hora de referência em {accum_csv_path.name}.")
+
     selected_basins = list(config.get("basins", {}).get("selected_ids", []))
     detailed_basins = set(config.get("basins", {}).get("detailed_stats_ids", []))
 
     generated_layers, used_accum_files_by_horizon = build_interp_layers(
         stations=stations,
         horizons_h=horizons_h,
-        accum_dir=accum_dir,
+        accum_table=accum_table,
+        accum_file_name=accum_csv_path.name,
         interp_dir=interp_dir,
-        reference_time=reference_time,
+        data_time=data_time,
         grid_res=grid_res,
         power=power,
     )
@@ -276,13 +329,15 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
             "run_id": config["runtime"]["run_id"],
             "mode": config.get("run", {}).get("mode", "operational"),
             "event_name": config.get("run", {}).get("event_name"),
-            "reference_time": get_runtime_reference_time(config),
+            "reference_time": data_time.isoformat(),
+            "runtime_reference_time": runtime_reference_time.isoformat(),
             "accum_horizons_h": horizons_h,
             "grid_res_deg": grid_res,
             "idw_power": power,
             "layers_generated": generated_layers,
             "used_accum_files_by_horizon": used_accum_files_by_horizon,
-            "accum_input_pattern": "{station}_{yyyymmdd}_{hhmm}_{horizon}.csv",
+            "accum_input_file": accum_csv_path.name,
+            "accum_input_pattern": "acc_{yyyymmdd}_{hhmm}.csv",
             "interp_output_pattern": "accum_{yyyymmdd}_{hhmm}_{horizon}.tif",
             "selected_basins_count": len(selected_basins),
         }
@@ -294,7 +349,7 @@ def main(*, config_dir: str | Path | None = None, event_name: str | None = None)
                 "schema_version": config.get("schema_version", "1.0"),
                 "step": "interpolate",
                 "run_id": config["runtime"]["run_id"],
-                "reference_time": get_runtime_reference_time(config),
+                "reference_time": data_time.isoformat(),
                 "basins": [
                     {
                         "basin_id": basin_id,
