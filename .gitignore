@@ -31,3 +31,6 @@ build/
 dist/
 *.egg-info/
 
+# LLM agents
+AGENTS.md
+CLAUDE.md
