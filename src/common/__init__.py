@@ -1,0 +1,1 @@
+"""Tipos, contratos, configuracao e utilitarios compartilhados."""

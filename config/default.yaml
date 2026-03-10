@@ -1,38 +1,45 @@
-schema_version: "1.0"
+schema_version: "2.0"
+timezone: "America/Sao_Paulo"
 
 run:
-  # "operational" usa dados recentes; "event_replay" usa uma data/evento passado.
   mode: "operational"
-  # Exemplo: "2024-05-05T09:00:00". Se null, usa a hora atual truncada para a hora cheia.
   reference_time: null
-  # Nome opcional de evento em config/events/<event_name>.yaml
   event_name: null
 
-ingest:
-  ana_base_url: "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
-  request_days: 7
-  timeout_seconds: 5
-
-windows:
-  forecast_days: [1, 3, 10, 30]
-  accum_hours: [24, 72, 240, 720]
-
-interpolation:
-  method: "idw"
-  grid_res_deg: 0.1
-  power: 2.0
-
 paths:
-  station_files:
-    - "data/estacoes_nivel.csv"
-    - "data/estacoes_pluv.csv"
-  telemetry_dir: "data/telemetria"
-  accum_dir: "data/accum"
-  interp_dir: "data/interp"
+  history_db: "data/history.sqlite"
+  runs_dir: "data/runs"
+  interim_dir: "data/interim"
+  timeseries_dir: "data/timeseries"
+  spatial_dir: "data/spatial"
+  logs_dir: "logs"
 
-outputs:
-  reports_base_dir: "data/reports"
-  write_summary_json: true
-  write_station_json: true
-  write_basin_json: true
-  write_config_snapshot: true
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+  observed_sources:
+    - "ana"
+    - "inmet"
+  forecast_grid_sources:
+    - "pending_definition"
+
+model:
+  id: "mgb"
+  runner_app: "apps/mgb_runner/main.py"
+
+reports:
+  formats:
+    - "sqlite"
+    - "markdown"
+
+states:
+  data:
+    - "raw"
+    - "curated"
+    - "approved"
+  runs:
+    - "draft"
+    - "ready"
+    - "executed"
+    - "reviewed"
+    - "published"

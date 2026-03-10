@@ -1,0 +1,1 @@
+"""Bootstrap dos bancos SQLite e stubs de repositorios."""

@@ -1,13 +1,18 @@
 # Overrides operacionais do dia.
-# Este arquivo pode ficar vazio quando não houver ajustes.
+# O run automatico diario e os runs manuais derivados partem deste arquivo.
 
 run:
   mode: "operational"
   reference_time: null
   event_name: null
+  run_kind: "automatic"
+  parent_run_id: null
+  operator: null
 
-# Exemplo para usar replay:
+# Exemplo de run manual derivado:
 # run:
-#   mode: "event_replay"
-#   reference_time: "2024-05-05T09:00:00"
-#   event_name: "maio_2024"
+#   mode: "operational"
+#   reference_time: "2026-03-10T12:00:00"
+#   run_kind: "manual"
+#   parent_run_id: "20260310T090000"
+#   operator: "nome.sobrenome"

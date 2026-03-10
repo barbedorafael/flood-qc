@@ -15,6 +15,13 @@ venv/
 
 # Data
 data/*
+!data/README.md
+!data/interim/
+!data/interim/.gitkeep
+!data/timeseries/
+!data/timeseries/.gitkeep
+!data/runs/
+!data/runs/.gitkeep
 logs/
 
 # Tests / tooling
@@ -23,7 +30,7 @@ logs/
 .coverage
 htmlcov/
 
-# Notebooks (não usamos, mas evita restos)
+# Notebooks (nao usamos, mas evita restos)
 .ipynb_checkpoints/
 
 # Builds

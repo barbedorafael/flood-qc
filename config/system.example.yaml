@@ -1,0 +1,13 @@
+system:
+  history_db: "data/history.sqlite"
+  runs_dir: "data/runs"
+  interim_dir: "data/interim"
+  timeseries_dir: "data/timeseries"
+  spatial_dir: "data/spatial"
+  logs_dir: "logs"
+
+mgb:
+  executable_path: "C:/caminho/para/mgb.exe"
+  workdir: "C:/caminho/para/mgb-workdir"
+  input_dir: "data/mgb-hora/Input"
+  output_dir: "data/mgb-hora/Output"
