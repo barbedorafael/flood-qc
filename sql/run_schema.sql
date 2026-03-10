@@ -1,106 +1,129 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS run_metadata (
+CREATE TABLE IF NOT EXISTS run (
     run_id TEXT PRIMARY KEY,
     reference_time TEXT NOT NULL,
     run_kind TEXT NOT NULL CHECK (run_kind IN ('automatic', 'manual')),
-    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'executed', 'reviewed', 'published')),
     parent_run_id TEXT,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'executed', 'reviewed', 'published')),
     operator TEXT,
     note TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS run_lineage (
-    id INTEGER PRIMARY KEY,
-    run_id TEXT NOT NULL REFERENCES run_metadata(run_id) ON DELETE CASCADE,
-    parent_run_id TEXT NOT NULL,
-    relation_type TEXT NOT NULL DEFAULT 'derived_from'
-);
-
-CREATE TABLE IF NOT EXISTS input_series (
-    id INTEGER PRIMARY KEY,
-    series_key TEXT NOT NULL UNIQUE,
-    variable TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS run_input_series (
+    series_id TEXT PRIMARY KEY,
+    history_series_id TEXT,
+    station_uid TEXT,
+    provider_code TEXT,
+    variable_code TEXT NOT NULL,
     unit TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'raw' CHECK (state IN ('raw', 'curated', 'approved')),
-    source_ref TEXT
+    source_asset_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS input_value (
-    id INTEGER PRIMARY KEY,
-    series_id INTEGER NOT NULL REFERENCES input_series(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS run_input_value (
+    series_id TEXT NOT NULL REFERENCES run_input_series(series_id) ON DELETE CASCADE,
     observed_at TEXT NOT NULL,
     value REAL,
-    UNIQUE (series_id, observed_at)
+    PRIMARY KEY (series_id, observed_at)
+);
+
+CREATE TABLE IF NOT EXISTS run_asset (
+    asset_id TEXT PRIMARY KEY,
+    asset_role TEXT NOT NULL,
+    asset_kind TEXT NOT NULL,
+    format TEXT NOT NULL,
+    relative_path TEXT NOT NULL UNIQUE,
+    source_history_asset_id TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS derived_series (
+    series_id TEXT PRIMARY KEY,
+    source_series_id TEXT,
+    variable_code TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'raw' CHECK (state IN ('raw', 'curated', 'approved')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS derived_value (
+    derived_value_id INTEGER PRIMARY KEY,
+    series_id TEXT NOT NULL REFERENCES derived_series(series_id) ON DELETE CASCADE,
+    observed_at TEXT,
+    window_start TEXT,
+    window_end TEXT,
+    horizon_h INTEGER,
+    value REAL
 );
 
 CREATE TABLE IF NOT EXISTS model_execution (
-    id INTEGER PRIMARY KEY,
-    runner_name TEXT NOT NULL DEFAULT 'mgb',
+    model_execution_id INTEGER PRIMARY KEY,
+    model_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'planned', 'running', 'completed', 'failed')),
     planned_command TEXT,
-    status TEXT NOT NULL DEFAULT 'draft',
-    executed_at TEXT,
-    note TEXT
+    started_at TEXT,
+    finished_at TEXT,
+    setup_gpkg_path TEXT NOT NULL,
+    setup_version TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS output_series (
-    id INTEGER PRIMARY KEY,
-    series_key TEXT NOT NULL UNIQUE,
-    variable TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS mgb_output_series (
+    series_id INTEGER PRIMARY KEY,
+    model_execution_id INTEGER NOT NULL REFERENCES model_execution(model_execution_id) ON DELETE CASCADE,
+    variable_code TEXT NOT NULL,
+    cell_id INTEGER NOT NULL,
+    prev_flag INTEGER NOT NULL DEFAULT 0 CHECK (prev_flag IN (0, 1)),
     unit TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'raw' CHECK (state IN ('raw', 'curated', 'approved')),
-    source_ref TEXT
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (model_execution_id, variable_code, cell_id, prev_flag)
 );
 
-CREATE TABLE IF NOT EXISTS output_value (
-    id INTEGER PRIMARY KEY,
-    series_id INTEGER NOT NULL REFERENCES output_series(id) ON DELETE CASCADE,
-    observed_at TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS mgb_output_value (
+    series_id INTEGER NOT NULL REFERENCES mgb_output_series(series_id) ON DELETE CASCADE,
+    dt TEXT NOT NULL,
     value REAL,
-    UNIQUE (series_id, observed_at)
+    PRIMARY KEY (series_id, dt)
 );
 
 CREATE TABLE IF NOT EXISTS qc_flag (
-    id INTEGER PRIMARY KEY,
-    scope TEXT NOT NULL,
-    reference_id TEXT NOT NULL,
+    qc_flag_id INTEGER PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
     rule_code TEXT NOT NULL,
     severity TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'open',
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'rejected', 'resolved')),
     message TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS manual_edit (
-    id INTEGER PRIMARY KEY,
-    entity_type TEXT NOT NULL,
-    entity_id TEXT NOT NULL,
+    manual_edit_id INTEGER PRIMARY KEY,
+    scope_type TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
     field_name TEXT NOT NULL,
     old_value TEXT,
     new_value TEXT,
-    reason TEXT NOT NULL,
     editor TEXT,
+    reason TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS asset_ref (
-    id INTEGER PRIMARY KEY,
-    asset_kind TEXT NOT NULL,
-    relative_path TEXT NOT NULL UNIQUE,
-    format TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'raw' CHECK (state IN ('raw', 'curated', 'approved')),
-    description TEXT
-);
-
 CREATE TABLE IF NOT EXISTS report_artifact (
-    id INTEGER PRIMARY KEY,
+    report_artifact_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     relative_path TEXT NOT NULL UNIQUE,
     format TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    note TEXT
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_input_value_series_time ON input_value(series_id, observed_at);
-CREATE INDEX IF NOT EXISTS idx_output_value_series_time ON output_value(series_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_run_input_value_observed_at ON run_input_value(observed_at);
+CREATE INDEX IF NOT EXISTS idx_derived_value_series ON derived_value(series_id);
+CREATE INDEX IF NOT EXISTS idx_mgb_output_value_dt ON mgb_output_value(dt);
+CREATE INDEX IF NOT EXISTS idx_mgb_output_series_cell ON mgb_output_series(cell_id, variable_code);

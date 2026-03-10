@@ -20,11 +20,19 @@ Foi adotado SQLite simples como baseline para reduzir dependencia operacional, f
 
 ### Banco historico + banco por run
 
-O historico persistente fica em `data/history.sqlite` e concentra metadados, observados, flags, edicoes e catalogo de runs. Cada run possui seu proprio arquivo em `data/runs/<run_id>.sqlite`, contendo lineage, inputs, outputs, assets e relatorios associados.
+O historico persistente fica em `data/history.sqlite` e concentra metadados, observados, flags, edicoes, assets externos e catalogo de runs. Cada run possui seu proprio arquivo em `data/runs/<run_id>.sqlite`, contendo copia dos inputs usados, derivados operacionais, execucao do modelo, outputs completos do MGB, assets e relatorios associados.
+
+### Observados em formato long
+
+O legado de observados da ANA e wide por timestamp (`level`, `rain`, `flow` na mesma linha). O modelo novo padroniza o historico em formato long, com uma serie por variavel e uma tabela de valores temporais. Isso reduz ambiguidade entre providers e facilita QC, aprovacao e extensao para novas variaveis meteorologicas.
 
 ### Rasters e vetores fora do banco
 
 Rasters e vetores nao entram como blob em SQLite. O banco guarda apenas metadados e paths relativos. Isso simplifica o consumo por QGIS, evita inflar os bancos e deixa os artefatos mais portaveis.
+
+### Setup espacial do MGB fora dos bancos
+
+O cadastro espacial completo do MGB fica em um GPKG externo em `data/spatial/`. O banco do run guarda apenas a referencia a esse setup, suficiente para ligar celulas e outputs do modelo sem normalizar geometrias em SQLite.
 
 ### Streamlit como UI principal
 
@@ -42,13 +50,15 @@ O MGB e Windows-only e tem acoplamentos especificos de executavel, diretoria de 
 
 - simplificar infraestrutura agora em vez de maximizar flexibilidade prematura.
 - arquivos SQLite e artefatos locais em vez de servicos centralizados.
-- contratos claros e stubs em vez de integrar APIs e modelo antes de estabilizar a estrutura.
+- outputs completos do MGB dentro do run.sqlite para tornar o run auto-suficiente.
+- geometria e setup espacial do MGB fora dos bancos para evitar duplicacao e acoplamento espacial desnecessario.
 
 ## Fluxo entre historico, runs e outputs
 
 1. A ingestao coleta dados externos e grava artefatos brutos em `data/interim/`.
-2. Series tratadas e aprovadas passam a ser referenciadas a partir de `data/timeseries/` e indexadas no historico.
+2. Series tratadas e aprovadas entram no historico em formato long.
 3. Um run e criado em `data/runs/<run_id>.sqlite`.
-4. O run referencia inputs, registra lineage e prepara a execucao do modelo.
-5. Outputs, flags e relatorios ficam vinculados ao banco do run.
-6. O historico recebe o catalogo do run e, quando apropriado, metadados de publicacao.
+4. O run copia os inputs usados, referencia os assets relevantes e registra derivados operacionais.
+5. O runner do MGB registra `model_execution` e associa o setup espacial externo via `setup_gpkg_path`.
+6. Outputs completos do modelo ficam em `mgb_output_series` e `mgb_output_value`.
+7. O historico recebe o catalogo do run e, quando apropriado, metadados de publicacao.

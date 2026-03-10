@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flood-qc-ops"
 version = "0.1.0"
-description = "Esqueleto operacional para hidrologia e previsao com foco em SQLite, Streamlit e artefatos locais."
+description = "Esqueleto operacional para hidrologia e previsao."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

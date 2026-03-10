@@ -32,8 +32,9 @@ def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
     apply_schema(target, SQL_DIR / "run_schema.sql")
     with sqlite3.connect(target) as connection:
         connection.execute(
-            "INSERT OR IGNORE INTO run_metadata (run_id, reference_time, run_kind, status) VALUES (?, ?, ?, ?)",
-            (run_id, run_id, "automatic", "draft"),
+            "INSERT OR IGNORE INTO run (run_id, reference_time, run_kind, status, parent_run_id, operator, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, run_id, "automatic", "draft", None, None, None),
         )
         connection.commit()
     return target
