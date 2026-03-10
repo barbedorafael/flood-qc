@@ -19,7 +19,6 @@ Nesta fase, o repositorio entrega estrutura, contratos, stubs, schemas SQL e doc
 ## Filosofia
 
 - artefatos locais primeiro;
-- SQLite como base operacional, sem Postgres canonico;
 - um banco historico persistente em `data/history.sqlite`;
 - um arquivo SQLite por run em `data/runs/`;
 - rasters e vetores fora do banco, com paths relativos e metadados;
