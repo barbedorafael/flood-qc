@@ -107,4 +107,4 @@ pytest
 
 ## Estado da base legada
 
-Os scripts e o dashboard anteriores foram movidos para `src/legacy/` e `apps/ops_dashboard/legacy_app.py`. Eles permanecem como referencia de implementacao antiga, mas nao sao mais a arquitetura canonica desta base.
+Os scripts e o dashboard anteriores foram movidos para `src/legacy/` e `apps/ops_dashboard/legacy_app.py`. Eles permanecem como referencia de implementacao antiga.
