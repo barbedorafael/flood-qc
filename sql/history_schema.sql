@@ -16,25 +16,15 @@ CREATE TABLE IF NOT EXISTS variable (
 );
 
 CREATE TABLE IF NOT EXISTS station (
-    station_uid TEXT PRIMARY KEY,
+    station_uid INTEGER PRIMARY KEY,
+    station_code TEXT NOT NULL,
     station_name TEXT NOT NULL,
-    station_type TEXT NOT NULL,
+    provider_code TEXT NOT NULL REFERENCES provider(provider_code),
     latitude REAL,
     longitude REAL,
-    altitude_m REAL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'planned')),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS station_alias (
-    station_alias_id INTEGER PRIMARY KEY,
-    station_uid TEXT NOT NULL REFERENCES station(station_uid) ON DELETE CASCADE,
-    provider_code TEXT NOT NULL REFERENCES provider(provider_code),
-    external_code TEXT NOT NULL,
-    is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+    altitude_m INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (provider_code, external_code),
-    UNIQUE (station_uid, provider_code, external_code)
+    UNIQUE (provider_code, station_code)
 );
 
 CREATE TABLE IF NOT EXISTS asset (
@@ -64,7 +54,7 @@ CREATE TABLE IF NOT EXISTS ingest_batch (
 
 CREATE TABLE IF NOT EXISTS observed_series (
     series_id TEXT PRIMARY KEY,
-    station_uid TEXT NOT NULL REFERENCES station(station_uid) ON DELETE CASCADE,
+    station_uid INTEGER NOT NULL REFERENCES station(station_uid) ON DELETE CASCADE,
     provider_code TEXT NOT NULL REFERENCES provider(provider_code),
     variable_code TEXT NOT NULL REFERENCES variable(variable_code),
     unit TEXT NOT NULL,
@@ -116,7 +106,6 @@ CREATE TABLE IF NOT EXISTS run_catalog (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_station_alias_station_uid ON station_alias(station_uid);
 CREATE INDEX IF NOT EXISTS idx_observed_series_station_var ON observed_series(station_uid, variable_code);
 CREATE INDEX IF NOT EXISTS idx_observed_value_observed_at ON observed_value(observed_at);
 CREATE INDEX IF NOT EXISTS idx_qc_flag_scope ON qc_flag(scope_type, scope_key);
@@ -125,11 +114,8 @@ CREATE INDEX IF NOT EXISTS idx_run_catalog_status ON run_catalog(status);
 INSERT OR IGNORE INTO provider (provider_code, provider_name, provider_type) VALUES
     ('ana', 'Agencia Nacional de Aguas e Saneamento Basico', 'observed'),
     ('inmet', 'Instituto Nacional de Meteorologia', 'observed'),
-    ('forecast_provider_x', 'Provider placeholder de previsao em grade', 'forecast'),
-    ('mgb_setup_ref', 'Referencia de setup espacial externo do MGB', 'reference');
+    ('ecmwf', 'European Centre for Medium-Range Weather Forecasts', 'forecast');
 
 INSERT OR IGNORE INTO variable (variable_code, variable_name, default_unit, description) VALUES
     ('rain', 'Precipitacao observada', 'mm', 'Valor observado no timestamp original'),
-    ('level', 'Nivel observado', 'cm', 'Nivel hidrometrico observado'),
-    ('flow', 'Vazao observada', 'm3/s', 'Vazao hidrometrica observada'),
-    ('rain_accum', 'Precipitacao acumulada', 'mm', 'Acumulado de chuva em janela temporal');
+    ('level', 'Nivel observado', 'cm', 'Nivel hidrometrico observado');

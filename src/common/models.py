@@ -46,10 +46,10 @@ class RunLineage:
 class StationRecord:
     station_code: str
     name: str
-    source: str
-    station_type: str
+    provider_code: str
     latitude: float | None = None
     longitude: float | None = None
+    altitude_m: int | None = None
 
 
 @dataclass(slots=True)

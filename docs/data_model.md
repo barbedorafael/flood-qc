@@ -60,15 +60,13 @@ Guarda o contexto fechado de uma execucao especifica:
 
 ### Estacoes
 
-O inventario de estacoes do historico e materializado por seed SQL versionado e representa a lista operacional canonica de estacoes por provider.
-
 No schema novo:
 
 - `station` guarda uma linha por estacao operacional local;
 - `provider_code + station_code` formam a identidade logica da estacao;
 - `station_code` ANA permanece sem zero a esquerda no catalogo canonico.
 
-O seed inicial do inventario fica em `sql/history_station_inventory_seed.sql`. Metadados podem ser enriquecidos a partir de referencias por provider antes de entrar no banco historico.
+O inventario inicial fica em `data/interim/history_station_inventory.csv`. O bootstrap do banco historico calcula `station_uid` como base do provider (`1000000000` para ANA, `2000000000` para INMET) somada ao `station_code`, convertendo letras para numeros (`A=1`, `B=2`, etc.), e carrega o inventario no banco.
 
 ### Series observadas
 

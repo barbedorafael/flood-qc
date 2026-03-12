@@ -21,6 +21,10 @@ def interim_dir() -> Path:
     return DATA_DIR / "interim"
 
 
+def history_station_inventory_csv_path() -> Path:
+    return interim_dir() / "history_station_inventory.csv"
+
+
 def timeseries_dir() -> Path:
     return DATA_DIR / "timeseries"
 
