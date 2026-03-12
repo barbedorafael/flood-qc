@@ -135,3 +135,40 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
     assert log_file.exists()
     assert "station=74100000" in log_file.read_text(encoding="utf-8")
     assert not (tmp_path / "reports").exists()
+
+
+def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE observed_series (
+                series_id TEXT PRIMARY KEY,
+                station_uid INTEGER NOT NULL,
+                provider_code TEXT NOT NULL,
+                variable_code TEXT NOT NULL,
+                unit TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'raw',
+                source_asset_id TEXT,
+                ingest_batch_id TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE variable (
+                variable_code TEXT PRIMARY KEY,
+                variable_name TEXT NOT NULL,
+                default_unit TEXT NOT NULL,
+                description TEXT
+            );
+            INSERT INTO variable (variable_code, variable_name, default_unit, description) VALUES
+                ('rain', 'Precipitacao observada', 'mm', ''),
+                ('level', 'Nivel observado', 'cm', '');
+            """
+        )
+
+    try:
+        HistoryRepository(db_path)
+    except RuntimeError as exc:
+        assert "Banco historico incompat" in str(exc)
+        assert "db_bootstrap.py --history" in str(exc)
+    else:
+        raise AssertionError("Era esperado erro para schema antigo de observed_series.")

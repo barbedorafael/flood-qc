@@ -14,6 +14,7 @@ class HistoryRepository:
         self.connection = sqlite3.connect(self.database_path)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self._validate_expected_schema()
 
     def __enter__(self) -> HistoryRepository:
         return self
@@ -23,6 +24,39 @@ class HistoryRepository:
 
     def close(self) -> None:
         self.connection.close()
+
+    def _validate_expected_schema(self) -> None:
+        observed_series_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(observed_series)").fetchall()
+        }
+        expected_observed_series_columns = {
+            "series_id",
+            "station_uid",
+            "variable_code",
+            "state",
+            "created_at",
+        }
+        if observed_series_columns != expected_observed_series_columns:
+            raise RuntimeError(
+                "Banco historico incompatível com o schema atual de observed_series. "
+                f"Esperado {sorted(expected_observed_series_columns)}, encontrado {sorted(observed_series_columns)}. "
+                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
+                "para recriar o banco."
+            )
+
+        variable_codes = {
+            row["variable_code"]
+            for row in self.connection.execute("SELECT variable_code FROM variable").fetchall()
+        }
+        expected_variables = {"rain", "level", "flow"}
+        if not expected_variables.issubset(variable_codes):
+            raise RuntimeError(
+                "Banco historico incompatível com o catalogo atual de variaveis. "
+                f"Esperado pelo menos {sorted(expected_variables)}, encontrado {sorted(variable_codes)}. "
+                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
+                "para recriar o banco."
+            )
 
     def get_provider_stations(self, provider_code: str) -> list[dict]:
         rows = self.connection.execute(

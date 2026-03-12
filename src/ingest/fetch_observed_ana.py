@@ -47,6 +47,28 @@ def build_run_id(reference_time: datetime) -> str:
     return reference_time.strftime("%Y%m%dT%H%M%S")
 
 
+def load_runtime_settings(config_dir: Path | None) -> dict:
+    try:
+        from common.settings import load_settings
+    except ModuleNotFoundError as exc:
+        if exc.name != "yaml":
+            raise
+        return {
+            "run": {"reference_time": None},
+            "paths": {
+                "history_db": "data/history.sqlite",
+                "interim_dir": "data/interim",
+                "logs_dir": "logs",
+            },
+            "ingest": {
+                "ana_base_url": DEFAULT_ANA_BASE_URL,
+                "request_days": 7,
+                "timeout_seconds": 15,
+            },
+        }
+    return load_settings(config_dir)
+
+
 def configure_run_logger(log_file: Path) -> logging.Logger:
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("floodqc.ingest.ana")
@@ -329,12 +351,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    from common.settings import load_settings
-
     parser = build_parser()
     args = parser.parse_args()
 
-    settings = load_settings(args.config_dir)
+    settings = load_runtime_settings(args.config_dir)
     paths = settings.get("paths", {})
     ingest_settings = settings.get("ingest", {})
 
