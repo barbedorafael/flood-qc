@@ -28,11 +28,11 @@ def test_initialize_history_db(tmp_path) -> None:
         "variable",
         "station",
         "asset",
-        "ingest_batch",
         "observed_series",
         "observed_value",
         "run_catalog",
     }.issubset(tables)
+    assert "ingest_batch" not in tables
 
     with sqlite3.connect(db_path) as connection:
         providers = {
@@ -60,7 +60,14 @@ def test_initialize_history_db(tmp_path) -> None:
     assert altitude_type == "INTEGER"
 
     assert {"ana", "inmet", "ecmwf"}.issubset(providers)
-    assert {"rain", "level"}.issubset(variables)
+    assert {"rain", "level", "flow"}.issubset(variables)
+
+    observed_series_columns = _list_columns(db_path, "observed_series")
+    assert {"series_id", "station_uid", "variable_code", "state", "created_at"}.issubset(observed_series_columns)
+    assert "provider_code" not in observed_series_columns
+    assert "unit" not in observed_series_columns
+    assert "source_asset_id" not in observed_series_columns
+    assert "ingest_batch_id" not in observed_series_columns
 
 
 def test_history_station_inventory_csv_loads(tmp_path) -> None:

@@ -40,29 +40,13 @@ CREATE TABLE IF NOT EXISTS asset (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS ingest_batch (
-    ingest_batch_id TEXT PRIMARY KEY,
-    provider_code TEXT NOT NULL REFERENCES provider(provider_code),
-    source_asset_id TEXT REFERENCES asset(asset_id),
-    window_start TEXT,
-    window_end TEXT,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed', 'partial')),
-    note TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    finished_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS observed_series (
     series_id TEXT PRIMARY KEY,
     station_uid INTEGER NOT NULL REFERENCES station(station_uid) ON DELETE CASCADE,
-    provider_code TEXT NOT NULL REFERENCES provider(provider_code),
     variable_code TEXT NOT NULL REFERENCES variable(variable_code),
-    unit TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'raw' CHECK (state IN ('raw', 'curated', 'approved')),
-    source_asset_id TEXT REFERENCES asset(asset_id),
-    ingest_batch_id TEXT REFERENCES ingest_batch(ingest_batch_id),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (station_uid, provider_code, variable_code, state, source_asset_id)
+    UNIQUE (station_uid, variable_code, state)
 );
 
 CREATE TABLE IF NOT EXISTS observed_value (
@@ -118,4 +102,5 @@ INSERT OR IGNORE INTO provider (provider_code, provider_name, provider_type) VAL
 
 INSERT OR IGNORE INTO variable (variable_code, variable_name, default_unit, description) VALUES
     ('rain', 'Precipitacao observada', 'mm', 'Valor observado no timestamp original'),
-    ('level', 'Nivel observado', 'cm', 'Nivel hidrometrico observado');
+    ('level', 'Nivel observado', 'cm', 'Nivel hidrometrico observado'),
+    ('flow', 'Vazao observada', 'm3/s', 'Vazao observada no timestamp original');
