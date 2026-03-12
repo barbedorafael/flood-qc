@@ -8,7 +8,6 @@
 - `variable`: catalogo de variaveis e unidade padrao.
 - `station`: cadastro canonico unificado de estacoes, uma linha por `provider_code + station_code`.
 - `asset`: ponteiro generico para arquivos externos como CSVs, GRIB2, rasters e GPKGs.
-- `ingest_batch`: agrupador de uma coleta ou importacao.
 - `observed_series`: definicao canonica de uma serie observada tratada.
 - `observed_value`: valores temporais em formato long.
 - `qc_flag`: flags de qualidade sem sobrescrever o dado original.
@@ -39,8 +38,7 @@ Guarda o estado consolidado e reusavel do sistema:
 - cadastro unificado de estacoes;
 - inventario local consolidado por provider;
 - observados em formato long;
-- assets externos estaveis e arquivos brutos/originais;
-- batches de ingestao;
+- assets externos estaveis e arquivos brutos/originais quando fizer sentido para o dominio;
 - flags persistentes e trilha de edicao;
 - catalogo de runs.
 
@@ -60,22 +58,22 @@ Guarda o contexto fechado de uma execucao especifica:
 
 ### Estacoes
 
-O inventario de estacoes do historico e materializado por seed SQL versionado e representa a lista operacional canonica de estacoes por provider.
-
 No schema novo:
 
 - `station` guarda uma linha por estacao operacional local;
 - `provider_code + station_code` formam a identidade logica da estacao;
 - `station_code` ANA permanece sem zero a esquerda no catalogo canonico.
 
-O seed inicial do inventario fica em `sql/history_station_inventory_seed.sql`. Metadados podem ser enriquecidos a partir de referencias por provider antes de entrar no banco historico.
+O inventario inicial fica em `data/interim/history_station_inventory.csv`. O bootstrap do banco historico calcula `station_uid` como base do provider (`1000000000` para ANA, `2000000000` para INMET) somada ao `station_code`, convertendo letras para numeros (`A=1`, `B=2`, etc.), e carrega o inventario no banco.
 
 ### Series observadas
 
 Observados entram em formato long:
 
-- cada variavel observavel vira uma linha em `observed_series`;
+- cada combinacao `station_uid + variable_code + state` vira uma linha em `observed_series`;
 - cada ponto temporal vira uma linha em `observed_value`.
+
+Metadados operacionais da aquisicao nao entram no banco historico nesta fase. Eles ficam em logs de execucao.
 
 ### Derivados operacionais
 

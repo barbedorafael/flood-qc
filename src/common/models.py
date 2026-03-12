@@ -49,7 +49,7 @@ class StationRecord:
     provider_code: str
     latitude: float | None = None
     longitude: float | None = None
-    altitude_m: float | None = None
+    altitude_m: int | None = None
 
 
 @dataclass(slots=True)

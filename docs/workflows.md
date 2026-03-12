@@ -4,7 +4,7 @@
 
 1. Coletar observados e previsoes de fontes externas.
 2. Gravar os arquivos brutos em `data/interim/`.
-3. Registrar assets e batches de ingestao no historico.
+3. Registrar o historico operacional da coleta em `logs/`.
 4. Materializar observados em `observed_series` e `observed_value` no formato long.
 
 ## QC automatico
