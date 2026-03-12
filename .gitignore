@@ -23,6 +23,7 @@ apps/*
 data/*
 !data/README.md
 !data/interim/.gitkeep
+!data/interim/history_station_inventory.csv
 !data/timeseries/.gitkeep
 !data/runs/.gitkeep
 logs/*
