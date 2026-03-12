@@ -82,15 +82,15 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
             "SELECT COUNT(DISTINCT provider_code || '|' || station_code) FROM station"
         ).fetchone()[0]
         ana_sample = connection.execute(
-            "SELECT station_name, altitude_m, typeof(altitude_m) FROM station "
+            "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'ana' AND station_code = '2650035'"
         ).fetchone()
         fallback_sample = connection.execute(
-            "SELECT station_name, altitude_m, typeof(altitude_m) FROM station "
+            "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'ana' AND station_code = '74320000'"
         ).fetchone()
         inmet_sample = connection.execute(
-            "SELECT station_name, altitude_m, typeof(altitude_m) FROM station "
+            "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'inmet' AND station_code = 'A840'"
         ).fetchone()
         computed_uids = dict(
@@ -108,9 +108,9 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
     assert inmet_total == 51
     assert distinct_uid == total
     assert distinct_station == total
-    assert ana_sample == ("UHE ITA CACADOR PLU", 960, "integer")
-    assert fallback_sample == ("PONTE DO SARGENTO", 0, "integer")
-    assert inmet_sample == ("Bento Goncalves", 623, "integer")
+    assert ana_sample == ("UHE ITA CACADOR PLU", -26.8192, -50.9856, 960, "integer")
+    assert fallback_sample == ("PONTE DO SARGENTO", -26.6822, -53.2861, 0, "integer")
+    assert inmet_sample == ("BENTO GONCALVES", -29.1645, -51.5342, 623, "integer")
     assert computed_uids == {
         "71200000": 1071200000,
         "2650035": 1002650035,

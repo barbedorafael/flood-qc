@@ -5,6 +5,7 @@ import csv
 import sqlite3
 import sys
 import unicodedata
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +37,7 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
 
 def _normalize_station_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKD", name.strip())
-    return normalized.encode("ascii", "ignore").decode("ascii")
+    return normalized.encode("ascii", "ignore").decode("ascii").upper()
 
 
 def _normalize_station_code(provider_code: str, station_code: str) -> str:
@@ -56,6 +57,13 @@ def _parse_nullable_int(value: str) -> int | None:
         return None
     normalized = normalized.replace(",", "")
     return int(normalized)
+
+
+def _parse_nullable_coordinate(value: str) -> float | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return float(Decimal(normalized).quantize(Decimal("0.0001"), rounding=ROUND_DOWN))
 
 
 def _station_code_to_int(station_code: str) -> int:
@@ -112,8 +120,8 @@ def load_history_station_inventory(
             provider_code = raw_row["provider_code"].strip().lower()
             station_code = _normalize_station_code(provider_code, raw_row["station_code"])
             station_name = _normalize_station_name(raw_row["station_name"])
-            latitude = float(raw_row["latitude"]) if raw_row["latitude"].strip() else None
-            longitude = float(raw_row["longitude"]) if raw_row["longitude"].strip() else None
+            latitude = _parse_nullable_coordinate(raw_row["latitude"])
+            longitude = _parse_nullable_coordinate(raw_row["longitude"])
             altitude_m = _parse_nullable_int(raw_row["altitude_m"])
 
             row_key = (provider_code, station_code)
