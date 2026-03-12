@@ -16,6 +16,8 @@ Organizar o repositorio para suportar:
 
 Nesta fase, o repositorio entrega estrutura, contratos, stubs, schemas SQL e documentacao. Integracoes externas, regras completas de QC, execucao real do MGB e UI final ainda nao estao implementadas.
 
+O inventario inicial de estacoes do historico e mantido em `sql/history_station_inventory_seed.sql` e carregado apos o bootstrap do banco historico.
+
 ## Filosofia
 
 - artefatos locais primeiro;
@@ -99,12 +101,9 @@ Comandos iniciais uteis:
 
 ```bash
 python src/storage/db_bootstrap.py --history
+sqlite3 data/history.sqlite < sql/history_station_inventory_seed.sql
 python src/storage/db_bootstrap.py --run-id 20260310T120000
 streamlit run apps/ops_dashboard/app.py
 python apps/mgb_runner/main.py --run-db data/runs/20260310T120000.sqlite --dry-run
 pytest
 ```
-
-## Estado da base legada
-
-Os scripts e o dashboard anteriores foram movidos para `src/legacy/` e `apps/ops_dashboard/legacy_app.py`. Eles permanecem como referencia de implementacao antiga.

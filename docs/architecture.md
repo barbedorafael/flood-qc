@@ -24,7 +24,7 @@ O historico persistente fica em `data/history.sqlite` e concentra metadados, obs
 
 ### Observados em formato long
 
-O legado de observados da ANA e wide por timestamp (`level`, `rain`, `flow` na mesma linha). O modelo novo padroniza o historico em formato long, com uma serie por variavel e uma tabela de valores temporais. Isso reduz ambiguidade entre providers e facilita QC, aprovacao e extensao para novas variaveis meteorologicas.
+O historico padroniza observados em formato long, com uma serie por variavel e uma tabela de valores temporais. Isso reduz ambiguidade entre providers, facilita QC, aprovacao e extensao para novas variaveis meteorologicas.
 
 ### Rasters e vetores fora do banco
 

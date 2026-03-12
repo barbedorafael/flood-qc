@@ -39,7 +39,3 @@ Toda transformacao relevante deve registrar:
 - operador ou servico responsavel;
 - motivo da alteracao;
 - relacao com o run impactado.
-
-## Observacao sobre dados legados
-
-O repositorio ainda contem diretorios historicos fora do layout alvo. Eles foram mantidos nesta etapa para evitar perda de dados locais e facilitar migracao gradual do acervo existente.

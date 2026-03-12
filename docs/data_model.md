@@ -6,8 +6,7 @@
 
 - `provider`: catalogo de origens como ANA, INMET e providers de grade.
 - `variable`: catalogo de variaveis e unidade padrao.
-- `station`: cadastro canonico unificado de estacoes.
-- `station_alias`: codigos externos por provider para a mesma estacao canonica.
+- `station`: cadastro canonico unificado de estacoes, uma linha por `provider_code + station_code`.
 - `asset`: ponteiro generico para arquivos externos como CSVs, GRIB2, rasters e GPKGs.
 - `ingest_batch`: agrupador de uma coleta ou importacao.
 - `observed_series`: definicao canonica de uma serie observada tratada.
@@ -38,7 +37,7 @@
 Guarda o estado consolidado e reusavel do sistema:
 
 - cadastro unificado de estacoes;
-- aliases por provider;
+- inventario local consolidado por provider;
 - observados em formato long;
 - assets externos estaveis e arquivos brutos/originais;
 - batches de ingestao;
@@ -59,43 +58,28 @@ Guarda o contexto fechado de uma execucao especifica:
 
 ## Convencoes de representacao
 
-### Estacoes e aliases
+### Estacoes
 
-O legado hoje tem arquivos como `data/estacoes_nivel.csv` e `data/estacoes_pluv.csv` com colunas `ID`, `CODIGO`, `LAT`, `LON`, `ALT`, `NOME`.
+O inventario de estacoes do historico e materializado por seed SQL versionado e representa a lista operacional canonica de estacoes por provider.
 
 No schema novo:
 
-- `station` guarda a identidade canonica da estacao;
-- `station_alias` guarda `CODIGO` e outros codigos por provider.
+- `station` guarda uma linha por estacao operacional local;
+- `provider_code + station_code` formam a identidade logica da estacao;
+- `station_code` ANA permanece sem zero a esquerda no catalogo canonico.
 
-Isso permite juntar ANA, INMET e outras origens sem criar um cadastro separado para cada provider.
+O seed inicial do inventario fica em `sql/history_station_inventory_seed.sql`. Metadados podem ser enriquecidos a partir de referencias por provider antes de entrar no banco historico.
 
 ### Series observadas
 
-O legado ANA persiste arquivos por estacao no formato wide:
-
-- `station_id`
-- `datetime`
-- `level`
-- `rain`
-- `flow`
-
-No schema novo, isso vira formato long:
+Observados entram em formato long:
 
 - cada variavel observavel vira uma linha em `observed_series`;
 - cada ponto temporal vira uma linha em `observed_value`.
 
 ### Derivados operacionais
 
-O legado de acumulados usa:
-
-- `station_id`
-- `dt_start`
-- `dt_end`
-- `horizon_h`
-- `rain_acc_mm`
-
-No schema novo:
+Derivados operacionais sao representados por:
 
 - `derived_series` define a serie derivada;
 - `derived_value` guarda `window_start`, `window_end`, `horizon_h` e `value`.
@@ -116,33 +100,12 @@ O banco do run guarda apenas a referencia desse setup em `model_execution.setup_
 
 ### Outputs do MGB
 
-O legado hoje organiza o MGB em parquet wide por variavel e `Mini`, com colunas:
-
-- `prev`
-- `dt`
-- uma coluna por `Mini`
-
-No schema novo, o output completo entra normalizado:
+Os outputs completos do MGB entram normalizados:
 
 - `mgb_output_series`: uma serie por `variable_code + cell_id + prev_flag`;
 - `mgb_output_value`: um valor por `series_id + dt`.
 
 Isso deixa o run auto-suficiente e facilita consultas por celula, variavel e tempo.
-
-## Mapeamento do legado para o schema novo
-
-- `data/estacoes_nivel.csv` e `data/estacoes_pluv.csv`
-  - alimentam `station` e `station_alias`.
-- `data/telemetria/<CODIGO>.csv`
-  - cada coluna observavel vira uma `observed_series` distinta e seus pontos entram em `observed_value`.
-- `data/accum/acc_*.csv`
-  - entram como `derived_series` + `derived_value` no run.
-- rasters de interpolacao
-  - entram como `run_asset` com `asset_role = interp_raster`.
-- `data/mgb-hora/processed/QTUDO.parquet`, `YTUDO.parquet`, `q_meta.json`, `y_meta.json`
-  - definem `cell_id`, `dt`, `prev_flag`, `nt`, `dt_seconds` e `source_files` usados para `mgb_output_series`, `mgb_output_value` e `model_execution.metadata_json`.
-- `src/legacy/fetch_data_inmet.py`
-  - confirma que meteorologia observada deve entrar como provider separado, mas reusar o mesmo modelo long de observados.
 
 ## Schemas implementados
 
