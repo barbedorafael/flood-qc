@@ -22,13 +22,10 @@ apps/*
 # Data
 data/*
 !data/README.md
-!data/interim/
 !data/interim/.gitkeep
-!data/timeseries/
 !data/timeseries/.gitkeep
-!data/runs/
 !data/runs/.gitkeep
-logs/
+logs/*
 
 # Tests / tooling
 .pytest_cache/
