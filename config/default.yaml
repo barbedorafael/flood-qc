@@ -15,6 +15,7 @@ paths:
   logs_dir: "logs"
 
 ingest:
+  ana_base_url: "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
   request_days: 7
   timeout_seconds: 15
   observed_sources:
