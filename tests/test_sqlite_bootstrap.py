@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from storage.db_bootstrap import initialize_history_db, initialize_run_db
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _list_tables(database_path) -> set[str]:
