@@ -1,11 +1,21 @@
-# Operacao e convencoes
+﻿# Operacao e convencoes
 
 ## Setup local
 
 1. Criar ambiente virtual com Python 3.10+.
 2. Instalar dependencias com `pip install -e .[dev]` e, quando necessario, `.[ui]`.
-3. Copiar `config/system.example.yaml` para `config/system.yaml` quando houver paths locais a configurar.
-4. Ajustar `.env` apenas para overrides de maquina.
+3. Ajustar `config/default.yaml` com os defaults operacionais do ingest.
+4. Usar `config/custom.yaml` apenas para overrides locais.
+5. Rodar `python src/ingest/fetch_observed_ana.py` sem argumentos.
+
+## Config do ingest
+
+O ingest novo le exclusivamente:
+
+- `config/default.yaml`
+- `config/custom.yaml`
+
+Os paths canonicos e a URL base da ANA ficam fixos em codigo.
 
 ## Convencoes de nomes
 

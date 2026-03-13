@@ -1,4 +1,4 @@
-# Sistema Operacional de Hidrologia e Previsao
+﻿# Sistema Operacional de Hidrologia e Previsao
 
 Base inicial para um sistema operacional de hidrologia e previsao orientado por artefatos locais, com foco em simplicidade, auditabilidade e crescimento incremental.
 
@@ -97,6 +97,8 @@ python -m venv .venv
 pip install -e .[dev]
 ```
 
+O ingest novo usa somente `config/default.yaml` e `config/custom.yaml`. O script `python src/ingest/fetch_observed_ana.py` roda sem parametros e sempre le esses arquivos.
+
 Comandos iniciais uteis:
 
 ```bash
@@ -107,3 +109,4 @@ streamlit run apps/ops_dashboard/app.py
 python apps/mgb_runner/main.py --run-db data/runs/20260310T120000.sqlite --dry-run
 pytest
 ```
+

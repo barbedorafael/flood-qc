@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from copy import deepcopy
-import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +10,9 @@ import yaml
 from common.paths import CONFIG_DIR
 
 
-CONFIG_FILES = ("default.yaml", "run.yaml", "qc.yaml", "basins.yaml")
-
-
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {}
+        raise FileNotFoundError(f"Arquivo de config nao encontrado: {path}")
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
@@ -34,39 +31,92 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-def _apply_env_overrides(settings: dict[str, Any]) -> dict[str, Any]:
-    env_map = {
-        "FLOODQC_HISTORY_DB": ("paths", "history_db"),
-        "FLOODQC_RUNS_DIR": ("paths", "runs_dir"),
-        "FLOODQC_INTERIM_DIR": ("paths", "interim_dir"),
-        "FLOODQC_TIMESERIES_DIR": ("paths", "timeseries_dir"),
-        "FLOODQC_SPATIAL_DIR": ("paths", "spatial_dir"),
-        "FLOODQC_LOG_DIR": ("paths", "logs_dir"),
-        "FLOODQC_MGB_EXECUTABLE": ("mgb", "executable_path"),
-        "FLOODQC_MGB_WORKDIR": ("mgb", "workdir"),
-    }
-    for env_name, keys in env_map.items():
-        value = os.getenv(env_name)
-        if not value:
+def _require_mapping(value: Any, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} deve ser um objeto YAML.")
+    return value
+
+
+def _validate_reference_time(value: Any, context: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{context} deve ser string ISO ou 'now'.")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{context} nao pode ser vazio.")
+    if normalized == "now":
+        return
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{context} deve ser string ISO valida ou 'now'.") from exc
+
+
+def _validate_positive_int(value: Any, context: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{context} deve ser inteiro >= 1.")
+
+
+def _validate_positive_number(value: Any, context: str) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{context} deve ser numero > 0.")
+
+
+def _validate_positive_int_list(value: Any, context: str) -> None:
+    if not isinstance(value, list):
+        raise ValueError(f"{context} deve ser lista de inteiros >= 1.")
+    for item in value:
+        if not isinstance(item, int) or isinstance(item, bool) or item < 1:
+            raise ValueError(f"{context} deve conter apenas inteiros >= 1.")
+
+
+def _validate_selected_mini_ids(value: Any, context: str) -> None:
+    if not isinstance(value, list):
+        raise ValueError(f"{context} deve ser lista.")
+    for item in value:
+        if not isinstance(item, (str, int)) or isinstance(item, bool):
+            raise ValueError(f"{context} deve conter apenas strings ou inteiros.")
+        if not str(item).strip():
+            raise ValueError(f"{context} nao pode conter valores vazios.")
+
+
+def _validate_section(config: dict[str, Any], schema: dict[str, Any], context: str) -> None:
+    extra_keys = sorted(set(config) - set(schema))
+    missing_keys = sorted(set(schema) - set(config))
+    if extra_keys:
+        raise ValueError(f"{context} contem chaves nao suportadas: {extra_keys}")
+    if missing_keys:
+        raise ValueError(f"{context} nao contem chaves obrigatorias: {missing_keys}")
+
+    for key, validator in schema.items():
+        value = config[key]
+        key_context = f"{context}.{key}"
+        if isinstance(validator, dict):
+            _validate_section(_require_mapping(value, key_context), validator, key_context)
             continue
-        scope = settings.setdefault(keys[0], {})
-        scope[keys[1]] = value
+        validator(value, key_context)
+
+
+def _validate_settings(settings: dict[str, Any]) -> None:
+    schema: dict[str, Any] = {
+        "run": {
+            "reference_time": _validate_reference_time,
+        },
+        "ingest": {
+            "request_days": _validate_positive_int,
+            "timeout_seconds": _validate_positive_number,
+        },
+        "summaries": {
+            "forecast_days": _validate_positive_int_list,
+            "accum_hours": _validate_positive_int_list,
+            "selected_mini_ids": _validate_selected_mini_ids,
+        },
+    }
+    _validate_section(_require_mapping(settings, "config"), schema, "config")
+
+
+def load_settings() -> dict[str, Any]:
+    settings = _deep_merge(_load_yaml(CONFIG_DIR / "default.yaml"), _load_yaml(CONFIG_DIR / "custom.yaml"))
+    _validate_settings(settings)
     return settings
-
-
-def load_settings(config_dir: Path | None = None) -> dict[str, Any]:
-    config_dir = config_dir or CONFIG_DIR
-    settings: dict[str, Any] = {}
-    for file_name in CONFIG_FILES:
-        settings = _deep_merge(settings, _load_yaml(config_dir / file_name))
-
-    system_path = config_dir / "system.yaml"
-    if system_path.exists():
-        settings = _deep_merge(settings, _load_yaml(system_path))
-
-    return _apply_env_overrides(settings)
-
-
-def read_logging_config(config_dir: Path | None = None) -> dict[str, Any]:
-    config_dir = config_dir or CONFIG_DIR
-    return _load_yaml(config_dir / "logging.yaml")

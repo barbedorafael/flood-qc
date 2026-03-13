@@ -1,6 +1,5 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import argparse
 import logging
 import sys
 import xml.etree.ElementTree as ET
@@ -15,6 +14,8 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from common.paths import history_db_path, interim_dir as default_interim_dir, logs_dir as default_logs_dir
+from common.settings import load_settings
 from storage.history_repository import HistoryRepository
 
 
@@ -22,12 +23,6 @@ TIMEZONE = ZoneInfo("America/Sao_Paulo")
 REQUEST_WINDOW_HOURS = 24
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 OBSERVED_VARIABLES = ("rain", "level", "flow")
-
-
-def resolve_path(raw_path: str) -> Path:
-    path = Path(raw_path)
-    return path if path.is_absolute() else REPO_ROOT / path
-
 
 def resolve_reference_time(raw_value: str | None) -> datetime:
     if raw_value in (None, "", "now"):
@@ -46,27 +41,6 @@ def resolve_reference_time(raw_value: str | None) -> datetime:
 def build_run_id(reference_time: datetime) -> str:
     return reference_time.strftime("%Y%m%dT%H%M%S")
 
-
-def load_runtime_settings(config_dir: Path | None) -> dict:
-    try:
-        from common.settings import load_settings
-    except ModuleNotFoundError as exc:
-        if exc.name != "yaml":
-            raise
-        return {
-            "run": {"reference_time": None},
-            "paths": {
-                "history_db": "data/history.sqlite",
-                "interim_dir": "data/interim",
-                "logs_dir": "logs",
-            },
-            "ingest": {
-                "ana_base_url": DEFAULT_ANA_BASE_URL,
-                "request_days": 7,
-                "timeout_seconds": 15,
-            },
-        }
-    return load_settings(config_dir)
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
@@ -339,47 +313,25 @@ def ingest_observed_ana(
         return summary
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Busca observados da ANA e grava no history.sqlite.")
-    parser.add_argument("--config-dir", type=Path, default=None, help="Diretorio de configuracao.")
-    parser.add_argument("--history-db", type=Path, default=None, help="Path alternativo para o history.sqlite.")
-    parser.add_argument("--reference-time", type=str, default=None, help="Timestamp ISO da referencia da coleta.")
-    parser.add_argument("--request-days", type=int, default=None, help="Numero de dias a buscar.")
-    parser.add_argument("--timeout-seconds", type=float, default=None, help="Timeout HTTP por requisicao.")
-    parser.add_argument("--station-code", action="append", default=None, help="Codigo de estacao ANA para filtrar.")
-    return parser
-
-
 def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    settings = load_runtime_settings(args.config_dir)
-    paths = settings.get("paths", {})
-    ingest_settings = settings.get("ingest", {})
-
-    database_path = args.history_db if args.history_db is not None else resolve_path(paths.get("history_db", "data/history.sqlite"))
-    interim_dir = resolve_path(paths.get("interim_dir", "data/interim"))
-    logs_dir = resolve_path(paths.get("logs_dir", "logs"))
-    base_url = str(ingest_settings.get("ana_base_url", DEFAULT_ANA_BASE_URL))
-    request_days = args.request_days if args.request_days is not None else int(ingest_settings.get("request_days", 7))
-    timeout_seconds = (
-        args.timeout_seconds if args.timeout_seconds is not None else float(ingest_settings.get("timeout_seconds", 15))
-    )
-    reference_time = resolve_reference_time(args.reference_time or settings.get("run", {}).get("reference_time"))
+    settings = load_settings()
+    ingest_settings = settings["ingest"]
+    reference_time = resolve_reference_time(settings["run"]["reference_time"])
 
     ingest_observed_ana(
-        database_path,
-        base_url=base_url,
+        history_db_path(),
+        base_url=DEFAULT_ANA_BASE_URL,
         reference_time=reference_time,
-        request_days=request_days,
-        timeout_seconds=timeout_seconds,
-        station_codes=args.station_code,
-        interim_dir=interim_dir,
-        logs_dir=logs_dir,
+        request_days=int(ingest_settings["request_days"]),
+        timeout_seconds=float(ingest_settings["timeout_seconds"]),
+        station_codes=None,
+        interim_dir=default_interim_dir(),
+        logs_dir=default_logs_dir(),
     )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

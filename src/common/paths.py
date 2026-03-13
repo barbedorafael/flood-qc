@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = REPO_ROOT / "config"
 DATA_DIR = REPO_ROOT / "data"
 SQL_DIR = REPO_ROOT / "sql"
+LOGS_DIR = REPO_ROOT / "logs"
 
 
 def history_db_path() -> Path:
@@ -19,6 +20,10 @@ def runs_dir() -> Path:
 
 def interim_dir() -> Path:
     return DATA_DIR / "interim"
+
+
+def logs_dir() -> Path:
+    return LOGS_DIR
 
 
 def history_station_inventory_csv_path() -> Path:

@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
 
-from ingest.fetch_observed_ana import ingest_observed_ana
+from ingest import fetch_observed_ana
 from storage.db_bootstrap import initialize_history_db
 from storage.history_repository import HistoryRepository, build_observed_series_id
 
@@ -84,7 +84,7 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr("ingest.fetch_observed_ana.requests.get", fake_get)
 
-    summary = ingest_observed_ana(
+    summary = fetch_observed_ana.ingest_observed_ana(
         db_path,
         base_url="http://example.test/ana",
         reference_time=datetime(2026, 3, 11, 0, 0, 0),
@@ -135,6 +135,46 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
     assert log_file.exists()
     assert "station=74100000" in log_file.read_text(encoding="utf-8")
     assert not (tmp_path / "reports").exists()
+
+
+def test_fetch_observed_ana_main_uses_config_only(tmp_path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        fetch_observed_ana,
+        "load_settings",
+        lambda: {
+            "run": {"reference_time": "2026-03-11T00:00:00"},
+            "ingest": {"request_days": 3, "timeout_seconds": 20},
+            "summaries": {
+                "forecast_days": [1, 3],
+                "accum_hours": [24, 72],
+                "selected_mini_ids": ["7601"],
+            },
+        },
+    )
+    monkeypatch.setattr(fetch_observed_ana, "history_db_path", lambda: tmp_path / "history.sqlite")
+    monkeypatch.setattr(fetch_observed_ana, "default_interim_dir", lambda: tmp_path / "interim")
+    monkeypatch.setattr(fetch_observed_ana, "default_logs_dir", lambda: tmp_path / "logs")
+
+    def fake_ingest(database_path, **kwargs):
+        captured["database_path"] = database_path
+        captured.update(kwargs)
+        return {"run_id": "20260311T000000"}
+
+    monkeypatch.setattr(fetch_observed_ana, "ingest_observed_ana", fake_ingest)
+
+    result = fetch_observed_ana.main()
+
+    assert result == 0
+    assert captured["database_path"] == tmp_path / "history.sqlite"
+    assert captured["base_url"] == fetch_observed_ana.DEFAULT_ANA_BASE_URL
+    assert captured["reference_time"] == datetime(2026, 3, 11, 0, 0, 0)
+    assert captured["request_days"] == 3
+    assert captured["timeout_seconds"] == 20.0
+    assert captured["station_codes"] is None
+    assert captured["interim_dir"] == tmp_path / "interim"
+    assert captured["logs_dir"] == tmp_path / "logs"
 
 
 def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
