@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
@@ -111,6 +111,10 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "forecast_days": _validate_positive_int_list,
             "accum_hours": _validate_positive_int_list,
             "selected_mini_ids": _validate_selected_mini_ids,
+        },
+        "mgb": {
+            "output_days_before": _validate_positive_int,
+            "output_days_after": _validate_positive_int,
         },
     }
     _validate_section(_require_mapping(settings, "config"), schema, "config")

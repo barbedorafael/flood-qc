@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 
@@ -17,6 +17,10 @@ summaries:
   forecast_days: [1, 3, 10, 30]
   accum_hours: [24, 72, 240, 720]
   selected_mini_ids: [\"7601\"]
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
 """
 
 
@@ -26,6 +30,9 @@ ingest:
 
 summaries:
   selected_mini_ids: [\"7601\", \"7612\"]
+
+mgb:
+  output_days_after: 20
 """
 
 
@@ -53,6 +60,8 @@ def test_load_settings_merges_default_and_custom(tmp_path, monkeypatch) -> None:
     assert settings["summaries"]["forecast_days"] == [1, 3, 10, 30]
     assert settings["summaries"]["accum_hours"] == [24, 72, 240, 720]
     assert settings["summaries"]["selected_mini_ids"] == ["7601", "7612"]
+    assert settings["mgb"]["output_days_before"] == 30
+    assert settings["mgb"]["output_days_after"] == 20
 
 
 def test_load_settings_accepts_now(tmp_path, monkeypatch) -> None:
@@ -70,6 +79,10 @@ summaries:
   forecast_days: [1]
   accum_hours: [24]
   selected_mini_ids: []
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
 """,
     )
     monkeypatch.setattr(settings_module, "CONFIG_DIR", tmp_path)
@@ -96,6 +109,10 @@ summaries:
   forecast_days: [1]
   accum_hours: [24]
   selected_mini_ids: []
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
 """,
             EMPTY_CUSTOM,
             "chaves obrigatorias",
@@ -114,6 +131,10 @@ summaries:
   forecast_days: [1]
   accum_hours: [24]
   selected_mini_ids: []
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
 """,
             EMPTY_CUSTOM,
             "chaves nao suportadas",
@@ -131,9 +152,56 @@ summaries:
   forecast_days: [1]
   accum_hours: [24]
   selected_mini_ids: []
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
 """,
             EMPTY_CUSTOM,
             "nao pode ser vazio",
+        ),
+        (
+            """\
+run:
+  reference_time: \"2026-03-11T00:00:00\"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  output_days_before: 0
+  output_days_after: 15
+""",
+            EMPTY_CUSTOM,
+            "inteiro >= 1",
+        ),
+        (
+            """\
+run:
+  reference_time: \"2026-03-11T00:00:00\"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
+  source: \"runner\"
+""",
+            EMPTY_CUSTOM,
+            "chaves nao suportadas",
         ),
         ("- item", EMPTY_CUSTOM, "esperado um objeto YAML"),
     ],
