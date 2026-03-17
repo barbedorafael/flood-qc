@@ -24,6 +24,11 @@ REQUEST_WINDOW_HOURS = 24
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 OBSERVED_VARIABLES = ("rain", "level", "flow")
 
+
+def script_stem() -> str:
+    return Path(__file__).stem
+
+
 def resolve_reference_time(raw_value: str | None) -> datetime:
     if raw_value in (None, "", "now"):
         now = datetime.now(TIMEZONE)
@@ -40,8 +45,6 @@ def resolve_reference_time(raw_value: str | None) -> datetime:
 
 def build_run_id(reference_time: datetime) -> str:
     return reference_time.strftime("%Y%m%dT%H%M%S")
-
-
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -217,7 +220,7 @@ def ingest_observed_ana(
         raise FileNotFoundError(f"Banco historico nao encontrado: {database_path}")
 
     run_id = build_run_id(reference_time)
-    logger = configure_run_logger(logs_dir / "ana" / f"{run_id}.log")
+    logger = configure_run_logger(logs_dir / script_stem() / f"{run_id}.log")
     raw_root_dir = interim_dir / "ana" / "raw"
     raw_root_dir.mkdir(parents=True, exist_ok=True)
 
@@ -333,5 +336,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

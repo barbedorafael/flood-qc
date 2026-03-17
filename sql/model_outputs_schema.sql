@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS variable (
 );
 
 CREATE TABLE IF NOT EXISTS output_series (
-    series_id INTEGER PRIMARY KEY,
+    series_id TEXT PRIMARY KEY,
     variable_code TEXT NOT NULL REFERENCES variable(variable_code) ON DELETE CASCADE,
     mini_id INTEGER NOT NULL,
     prev_flag INTEGER NOT NULL CHECK (prev_flag IN (0, 1)),
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS output_series (
 );
 
 CREATE TABLE IF NOT EXISTS output_value (
-    series_id INTEGER NOT NULL REFERENCES output_series(series_id) ON DELETE CASCADE,
+    series_id TEXT NOT NULL REFERENCES output_series(series_id) ON DELETE CASCADE,
     dt TEXT NOT NULL,
     value REAL,
     PRIMARY KEY (series_id, dt)

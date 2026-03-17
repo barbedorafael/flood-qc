@@ -102,6 +102,9 @@ Os outputs completos do MGB entram normalizados:
 
 - `mgb_output_series`: uma serie por `variable_code + cell_id + prev_flag`;
 - `mgb_output_value`: um valor por `series_id + dt`.
+- para export local de `model_outputs.sqlite`, `variable_code` canonico usa `q` para `QTUDO*` e `y` para `YTUDO*`;
+- `display_name` preserva o nome original do produto MGB (`QTUDO` e `YTUDO`);
+- `series_id` e deterministico no formato `<mini_id com zero a esquerda para 4 digitos>.<variable_code>.<sim|for>`, por exemplo `0539.q.sim`.
 
 Isso deixa o run auto-suficiente e facilita consultas por celula, variavel e tempo.
 

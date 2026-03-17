@@ -14,6 +14,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "sql" / "model_outputs_schema.sql"
 
 
+def configure_export_logging(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setattr("model.export_mgb_outputs.default_logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr("model.export_mgb_outputs.build_execution_id", lambda: "20260101T120000")
+    return tmp_path / "logs" / "export_mgb_outputs" / "20260101T120000.log"
+
+
 def write_parhig(path: Path, *, start_time: datetime, nc: int, dt_seconds: int = 3600) -> None:
     path.write_text(
         "\n".join(
@@ -87,10 +93,11 @@ def build_dataset(
     }
 
 
-def test_export_mgb_outputs_creates_expected_sqlite(tmp_path) -> None:
+def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
     output_db_path = tmp_path / "data" / "interim" / "model_outputs.sqlite"
     output_db_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = configure_export_logging(tmp_path, monkeypatch)
 
     connection = sqlite3.connect(output_db_path)
     try:
@@ -120,6 +127,12 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path) -> None:
     assert summary.nt_forecast == 480
     assert summary.series_count == 8
     assert summary.value_count == 4416
+    assert log_file.exists()
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "export_start" in log_text
+    assert "chunk_written variable=q prev=sim" in log_text
+    assert "export_done" in log_text
 
     with sqlite3.connect(output_db_path) as connection:
         tables = {
@@ -146,7 +159,14 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path) -> None:
         variable_rows = connection.execute(
             "SELECT variable_code, display_name, unit FROM variable ORDER BY variable_code"
         ).fetchall()
-        assert variable_rows == [("QTUDO", "QTUDO", "m3/s"), ("YTUDO", "YTUDO", "m")]
+        assert variable_rows == [("q", "QTUDO", "m3/s"), ("y", "YTUDO", "m")]
+
+        series_rows = connection.execute(
+            "SELECT series_id, variable_code, mini_id, prev_flag "
+            "FROM output_series ORDER BY variable_code, mini_id, prev_flag"
+        ).fetchall()
+        assert ("0101.q.sim", "q", 101, 0) in series_rows
+        assert ("0101.q.for", "q", 101, 1) in series_rows
 
         output_series_count = connection.execute("SELECT COUNT(*) FROM output_series").fetchone()[0]
         output_value_count = connection.execute("SELECT COUNT(*) FROM output_value").fetchone()[0]
@@ -157,7 +177,7 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path) -> None:
             "SELECT MIN(v.dt), MAX(v.dt) "
             "FROM output_value v "
             "JOIN output_series s ON s.series_id = v.series_id "
-            "WHERE s.variable_code = 'QTUDO' AND s.mini_id = 101 AND s.prev_flag = 0"
+            "WHERE s.variable_code = 'q' AND s.mini_id = 101 AND s.prev_flag = 0"
         ).fetchone()
         assert current_dt_bounds == ("2026-01-10T00:00:00", "2026-02-09T23:00:00")
 
@@ -165,7 +185,7 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path) -> None:
             "SELECT MIN(v.dt), MAX(v.dt) "
             "FROM output_value v "
             "JOIN output_series s ON s.series_id = v.series_id "
-            "WHERE s.variable_code = 'QTUDO' AND s.mini_id = 101 AND s.prev_flag = 1"
+            "WHERE s.variable_code = 'q' AND s.mini_id = 101 AND s.prev_flag = 1"
         ).fetchone()
         assert forecast_dt_bounds == ("2026-02-10T00:00:00", "2026-02-24T23:00:00")
 
@@ -173,22 +193,30 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path) -> None:
             "SELECT v.value "
             "FROM output_value v "
             "JOIN output_series s ON s.series_id = v.series_id "
-            "WHERE s.variable_code = 'QTUDO' AND s.mini_id = 101 AND s.prev_flag = 0 "
+            "WHERE s.series_id = '0101.q.sim' "
             "ORDER BY v.dt LIMIT 1"
         ).fetchone()[0]
         forecast_first_value = connection.execute(
             "SELECT v.value "
             "FROM output_value v "
             "JOIN output_series s ON s.series_id = v.series_id "
-            "WHERE s.variable_code = 'QTUDO' AND s.mini_id = 101 AND s.prev_flag = 1 "
+            "WHERE s.series_id = '0101.q.for' "
             "ORDER BY v.dt LIMIT 1"
         ).fetchone()[0]
         assert current_first_value == 216.0
         assert forecast_first_value == 100000.0
 
 
-def test_export_mgb_outputs_requires_forecast_file(tmp_path) -> None:
+def test_build_output_series_id_zero_pads_mini_id() -> None:
+    from model.export_mgb_outputs import build_output_series_id
+
+    assert build_output_series_id(539, "q", 0) == "0539.q.sim"
+    assert build_output_series_id(539, "q", 1) == "0539.q.for"
+
+
+def test_export_mgb_outputs_requires_forecast_file(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
+    configure_export_logging(tmp_path, monkeypatch)
     Path(dataset["output_dir"]).joinpath("YTUDO_prev.MGB").unlink()
 
     with pytest.raises(FileNotFoundError, match="YTUDO"):
@@ -203,8 +231,9 @@ def test_export_mgb_outputs_requires_forecast_file(tmp_path) -> None:
         )
 
 
-def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path) -> None:
+def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, mini_ids=[101, 101])
+    configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="duplicated Mini ids"):
         export_mgb_outputs(
@@ -218,8 +247,9 @@ def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path) -> None:
         )
 
 
-def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path) -> None:
+def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, y_forecast_nt=120)
+    configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="Inconsistent NT"):
         export_mgb_outputs(
