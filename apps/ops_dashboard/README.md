@@ -8,4 +8,9 @@ Uso esperado:
 streamlit run apps/ops_dashboard/app.py
 ```
 
-Nesta fase a interface e um placeholder com secoes de navegacao e resumo da arquitetura. Nenhuma revisao operacional real foi implementada ainda.
+O dashboard consome:
+
+- `data/history.sqlite` para cadastro de estacoes e series observadas;
+- `data/interim/model_outputs.sqlite` para series MGB;
+- `data/interim/accum_*h.tif` para rasters de chuva acumulada;
+- `data/legacy/app_layers/rios_mini.geojson` para clique nas minis MGB.
