@@ -113,7 +113,7 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
         ).fetchall()
 
     raw_xml_files = list((tmp_path / "interim" / "ana" / "raw" / "74100000").glob("*.xml"))
-    log_file = tmp_path / "logs" / "ana" / "20260311T000000.log"
+    log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T000000.log"
 
     assert summary == {
         "run_id": "20260311T000000",
