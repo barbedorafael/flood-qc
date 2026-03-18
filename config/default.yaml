@@ -6,7 +6,7 @@ ingest:
   timeout_seconds: 15
 
 summaries:
-  forecast_days: [1, 3, 10, 30]
+  forecast_days: [1, 3, 7, 15]
   accum_hours: [24, 72, 240, 720]
   selected_mini_ids: []
 
