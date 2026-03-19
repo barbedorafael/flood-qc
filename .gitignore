@@ -45,3 +45,6 @@ dist/
 # LLM agents
 AGENTS.md
 CLAUDE.md
+
+# Reference code
+from_Erik/
