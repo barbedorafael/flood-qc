@@ -64,7 +64,7 @@ def test_load_settings_merges_default_and_custom(tmp_path, monkeypatch) -> None:
     assert settings["mgb"]["output_days_after"] == 20
 
 
-def test_load_settings_accepts_now(tmp_path, monkeypatch) -> None:
+def test_load_settings_accepts_now_and_yesterday(tmp_path, monkeypatch) -> None:
     write_config(
         tmp_path,
         default_text="""\
@@ -90,6 +90,31 @@ mgb:
     settings = settings_module.load_settings()
 
     assert settings["run"]["reference_time"] == "now"
+
+    write_config(
+        tmp_path,
+        default_text="""\
+run:
+  reference_time: "yesterday"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  output_days_before: 30
+  output_days_after: 15
+""",
+    )
+
+    settings = settings_module.load_settings()
+
+    assert settings["run"]["reference_time"] == "yesterday"
 
 
 @pytest.mark.parametrize(

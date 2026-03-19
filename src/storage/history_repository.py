@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def build_observed_series_id(station_uid: int, variable_code: str, state: str = "raw") -> str:
-    return f"obs.{station_uid}.{variable_code}.{state}"
+    return f"{station_uid}.{variable_code}.{state}"
 
 
 class HistoryRepository:

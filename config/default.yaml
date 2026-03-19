@@ -1,8 +1,8 @@
 run:
-  reference_time: "now"
+  reference_time: "yesterday"
 
 ingest:
-  request_days: 7
+  request_days: 90
   timeout_seconds: 15
 
 summaries:

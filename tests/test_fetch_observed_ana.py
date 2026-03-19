@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import shutil
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from ingest import fetch_observed_ana
 from storage.db_bootstrap import initialize_history_db
@@ -43,6 +44,15 @@ class FakeResponse:
         return None
 
 
+class FakeDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        current = cls(2026, 3, 19, 11, 35, 42)
+        if tz is not None:
+            return current.replace(tzinfo=tz)
+        return current
+
+
 def test_history_repository_observed_series_and_values(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
@@ -53,11 +63,11 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
         repeated_series_id = repository.ensure_observed_series(station["station_uid"], "rain")
         written = repository.upsert_observed_values(
             series_id,
-            [("2026-03-10 00:00:00", 1.0), ("2026-03-10 01:00:00", 2.0)],
+            [("2026-03-10 00:00", 1.0), ("2026-03-10 01:00", 2.0)],
         )
         updated = repository.upsert_observed_values(
             series_id,
-            [("2026-03-10 00:00:00", 3.5)],
+            [("2026-03-10 00:00", 3.5)],
         )
 
     with sqlite3.connect(db_path) as connection:
@@ -72,60 +82,49 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
     assert written == 2
     assert updated == 1
     assert series_total == 1
-    assert values == [("2026-03-10 00:00:00", 3.5), ("2026-03-10 01:00:00", 2.0)]
+    assert values == [("2026-03-10 00:00", 3.5), ("2026-03-10 01:00", 2.0)]
 
 
-def test_history_repository_uses_existing_series_id_for_legacy_row(tmp_path) -> None:
+def test_fetch_observed_ana_resolve_reference_time_accepts_yesterday(monkeypatch) -> None:
+    monkeypatch.setattr(fetch_observed_ana, "datetime", FakeDateTime)
+
+    reference_time = fetch_observed_ana.resolve_reference_time("yesterday")
+
+    assert reference_time == datetime(2026, 3, 18, 0, 0, 0)
+
+
+def test_history_repository_rebuild_assumption_uses_canonical_series_id(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
-    with sqlite3.connect(db_path) as connection:
-        station_uid = connection.execute(
-            "SELECT station_uid FROM station WHERE provider_code = 'ana' ORDER BY station_code LIMIT 1"
-        ).fetchone()[0]
-        connection.execute(
-            """
-            INSERT INTO observed_series (series_id, station_uid, variable_code, state)
-            VALUES (?, ?, ?, ?)
-            """,
-            ("legacy.ana.rain.series", station_uid, "rain", "raw"),
-        )
-        connection.commit()
-
     with HistoryRepository(db_path) as repository:
+        station_uid = repository.get_provider_stations("ana")[0]["station_uid"]
         series_id = repository.ensure_observed_series(station_uid, "rain")
-        written = repository.upsert_observed_values(
-            series_id,
-            [("2026-03-10 00:00:00", 1.0)],
-        )
 
-    with sqlite3.connect(db_path) as connection:
-        series_rows = connection.execute(
-            "SELECT series_id, station_uid, variable_code, state FROM observed_series"
-        ).fetchall()
-        values = connection.execute(
-            "SELECT series_id, observed_at, value FROM observed_value ORDER BY observed_at"
-        ).fetchall()
-
-    assert series_id == "legacy.ana.rain.series"
-    assert written == 1
-    assert series_rows == [("legacy.ana.rain.series", station_uid, "rain", "raw")]
-    assert values == [("legacy.ana.rain.series", "2026-03-10 00:00:00", 1.0)]
+    assert series_id == f"{station_uid}.rain.raw"
 
 
 def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
-    def fake_get(*args, **kwargs):
+    requested_params: list[dict[str, str]] = []
+
+    def fake_get(url, params=None, timeout=None):
+        requested_params.append(params)
         return FakeResponse(SAMPLE_ANA_XML)
 
     monkeypatch.setattr("ingest.fetch_observed_ana.requests.get", fake_get)
 
+    stale_root = tmp_path / "interim" / "ana"
+    stale_station_dir = stale_root / "99999999"
+    stale_station_dir.mkdir(parents=True, exist_ok=True)
+    (stale_station_dir / "old.xml").write_text("obsolete", encoding="utf-8")
+
     summary = fetch_observed_ana.ingest_observed_ana(
         db_path,
         base_url="http://example.test/ana",
-        reference_time=datetime(2026, 3, 11, 0, 0, 0),
+        reference_time=datetime(2026, 3, 11, 13, 45, 0),
         request_days=1,
         timeout_seconds=5,
         station_codes=["74100000"],
@@ -139,39 +138,45 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
         ).fetchall()
         rain_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = 'obs.1074100000.rain.raw' ORDER BY observed_at"
+            "WHERE series_id = '1074100000.rain.raw' ORDER BY observed_at"
         ).fetchall()
         level_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = 'obs.1074100000.level.raw' ORDER BY observed_at"
+            "WHERE series_id = '1074100000.level.raw' ORDER BY observed_at"
         ).fetchall()
         flow_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = 'obs.1074100000.flow.raw' ORDER BY observed_at"
+            "WHERE series_id = '1074100000.flow.raw' ORDER BY observed_at"
         ).fetchall()
 
-    raw_xml_files = list((tmp_path / "interim" / "ana" / "raw" / "74100000").glob("*.xml"))
-    log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T000000.log"
+    raw_xml_files = list((tmp_path / "interim" / "ana" / "74100000").glob("*.xml"))
+    log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T134500.log"
+    log_text = log_file.read_text(encoding="utf-8")
 
     assert summary == {
-        "run_id": "20260311T000000",
+        "run_id": "20260311T134500",
         "stations_total": 1,
         "stations_ok": 1,
         "stations_no_data": 0,
         "stations_error": 0,
     }
+    assert requested_params == [{"codEstacao": "74100000", "dataInicio": "11/03/2026", "dataFim": "11/03/2026"}]
     assert series_rows == [
-        ("obs.1074100000.flow.raw", "flow"),
-        ("obs.1074100000.level.raw", "level"),
-        ("obs.1074100000.rain.raw", "rain"),
+        ("1074100000.flow.raw", "flow"),
+        ("1074100000.level.raw", "level"),
+        ("1074100000.rain.raw", "rain"),
     ]
-    assert rain_values == [("2026-03-10 00:00:00", 2.0)]
-    assert level_values == [("2026-03-10 00:00:00", 101.0), ("2026-03-10 02:00:00", 105.0)]
-    assert flow_values == [("2026-03-10 00:00:00", 11.0), ("2026-03-10 02:00:00", 12.0)]
+    assert rain_values == [("2026-03-10 00:00", 2.0)]
+    assert level_values == [("2026-03-10 00:00", 101.0), ("2026-03-10 02:00", 105.0)]
+    assert flow_values == [("2026-03-10 00:00", 11.0), ("2026-03-10 02:00", 12.0)]
     assert len(raw_xml_files) == 1
+    assert raw_xml_files[0].name == "20260311__20260311.xml"
     assert raw_xml_files[0].read_text(encoding="utf-8") == SAMPLE_ANA_XML
+    assert not stale_station_dir.exists()
     assert log_file.exists()
-    assert "station=74100000" in log_file.read_text(encoding="utf-8")
+    assert "window_start=2026-03-11 window_end=2026-03-11" in log_text
+    assert "raw_xml=" in log_text
+    assert not (tmp_path / "interim" / "ana" / "raw").exists()
     assert not (tmp_path / "reports").exists()
 
 

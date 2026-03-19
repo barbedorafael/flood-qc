@@ -98,13 +98,13 @@ def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -
         insert_station(connection, station_uid=1002, station_code="1002", station_name="ISSUE")
         insert_station(connection, station_uid=1003, station_code="1003", station_name="NODATA")
 
-        insert_observed_series(connection, series_id="obs.1001.rain.raw", station_uid=1001, variable_code="rain", state="raw")
-        insert_observed_series(connection, series_id="obs.1002.rain.raw", station_uid=1002, variable_code="rain", state="raw")
-        insert_observed_series(connection, series_id="obs.1003.rain.raw", station_uid=1003, variable_code="rain", state="raw")
+        insert_observed_series(connection, series_id="1001.rain.raw", station_uid=1001, variable_code="rain", state="raw")
+        insert_observed_series(connection, series_id="1002.rain.raw", station_uid=1002, variable_code="rain", state="raw")
+        insert_observed_series(connection, series_id="1003.rain.raw", station_uid=1003, variable_code="rain", state="raw")
 
-        insert_observed_value(connection, series_id="obs.1001.rain.raw", observed_at="2026-03-16 00:00:00", value=5.0)
-        insert_observed_value(connection, series_id="obs.1002.rain.raw", observed_at="2026-03-16 00:00:00", value=None)
-        insert_observed_value(connection, series_id="obs.1003.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
+        insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-03-16 00:00:00", value=5.0)
+        insert_observed_value(connection, series_id="1002.rain.raw", observed_at="2026-03-16 00:00:00", value=None)
+        insert_observed_value(connection, series_id="1003.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
         connection.commit()
 
     catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
@@ -128,7 +128,7 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
         insert_station(connection, station_uid=1001, station_code="1001", station_name="TESTE")
         insert_observed_series(
             connection,
-            series_id="obs.1001.rain.raw",
+            series_id="1001.rain.raw",
             station_uid=1001,
             variable_code="rain",
             state="raw",
@@ -136,17 +136,17 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
         )
         insert_observed_series(
             connection,
-            series_id="obs.1001.rain.curated",
+            series_id="1001.rain.curated",
             station_uid=1001,
             variable_code="rain",
             state="curated",
             created_at="2026-03-11 00:00:00",
         )
-        insert_observed_series(connection, series_id="obs.1001.level.raw", station_uid=1001, variable_code="level", state="raw")
+        insert_observed_series(connection, series_id="1001.level.raw", station_uid=1001, variable_code="level", state="raw")
 
-        insert_observed_value(connection, series_id="obs.1001.rain.raw", observed_at="2026-03-16 01:00:00", value=1.0)
-        insert_observed_value(connection, series_id="obs.1001.rain.curated", observed_at="2026-03-16 01:00:00", value=2.5)
-        insert_observed_value(connection, series_id="obs.1001.level.raw", observed_at="2026-03-16 01:00:00", value=120.0)
+        insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-03-16 01:00:00", value=1.0)
+        insert_observed_value(connection, series_id="1001.rain.curated", observed_at="2026-03-16 01:00:00", value=2.5)
+        insert_observed_value(connection, series_id="1001.level.raw", observed_at="2026-03-16 01:00:00", value=120.0)
         connection.commit()
 
     observed = ops_dashboard_data.load_observed_series(1001, db_path, days=30, now=now)

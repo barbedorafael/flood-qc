@@ -1,9 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
+import shutil
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,7 +21,6 @@ from storage.history_repository import HistoryRepository
 
 
 TIMEZONE = ZoneInfo("America/Sao_Paulo")
-REQUEST_WINDOW_HOURS = 24
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 OBSERVED_VARIABLES = ("rain", "level", "flow")
 
@@ -30,9 +30,12 @@ def script_stem() -> str:
 
 
 def resolve_reference_time(raw_value: str | None) -> datetime:
+    now = datetime.now(TIMEZONE)
     if raw_value in (None, "", "now"):
-        now = datetime.now(TIMEZONE)
         return now.replace(minute=0, second=0, microsecond=0, tzinfo=None)
+    if raw_value == "yesterday":
+        yesterday = now.date() - timedelta(days=1)
+        return datetime.combine(yesterday, datetime.min.time())
 
     text = str(raw_value).strip()
     if text.endswith("Z"):
@@ -40,11 +43,12 @@ def resolve_reference_time(raw_value: str | None) -> datetime:
     reference_time = datetime.fromisoformat(text)
     if reference_time.tzinfo is not None:
         reference_time = reference_time.astimezone(TIMEZONE).replace(tzinfo=None)
-    return reference_time
+    return reference_time.replace(second=0, microsecond=0)
 
 
 def build_run_id(reference_time: datetime) -> str:
     return reference_time.strftime("%Y%m%dT%H%M%S")
+
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -127,52 +131,52 @@ def parse_response(text: str):
         return pd.DataFrame(columns=["station_code", "observed_at", *OBSERVED_VARIABLES])
 
     frame = pd.DataFrame.from_records(records)
-    frame["observed_at"] = pd.to_datetime(frame["observed_at"])
+    frame["observed_at"] = pd.to_datetime(frame["observed_at"]).dt.floor("min")
     return frame
 
 
 def fetch_station_xml(
     station_code: str,
     *,
-    start_time: datetime,
-    end_time: datetime,
+    request_date: date,
     base_url: str,
     timeout_seconds: float,
 ) -> str:
     params = {
         "codEstacao": station_code,
-        "dataInicio": start_time.strftime("%d/%m/%Y %H:%M:%S"),
-        "dataFim": end_time.strftime("%d/%m/%Y %H:%M:%S"),
+        "dataInicio": request_date.strftime("%d/%m/%Y"),
+        "dataFim": request_date.strftime("%d/%m/%Y"),
     }
     response = requests.get(base_url, params=params, timeout=timeout_seconds)
     response.raise_for_status()
     return response.text
 
 
-def iter_request_windows(reference_time: datetime, request_days: int):
-    start_time = reference_time - timedelta(days=request_days)
-    window_delta = timedelta(hours=REQUEST_WINDOW_HOURS)
-    one_second = timedelta(seconds=1)
+def iter_request_dates(reference_time: datetime, request_days: int):
+    reference_date = reference_time.date()
+    start_date = reference_date - timedelta(days=request_days - 1)
 
-    for window_index in range(request_days):
-        window_start = start_time + (window_index * window_delta)
-        window_end = window_start + window_delta - one_second
-        if window_index == request_days - 1:
-            window_end = reference_time
-        yield window_start, window_end
+    for offset in range(request_days):
+        yield start_date + timedelta(days=offset)
+
+
+def reset_ana_interim_dir(ana_dir: Path) -> None:
+    if ana_dir.exists():
+        shutil.rmtree(ana_dir)
+    ana_dir.mkdir(parents=True, exist_ok=True)
 
 
 def save_raw_xml(
     xml_text: str,
     *,
-    raw_root_dir: Path,
+    ana_root_dir: Path,
     station_code: str,
-    start_time: datetime,
-    end_time: datetime,
+    request_date: date,
 ) -> Path:
-    station_dir = raw_root_dir / station_code
+    station_dir = ana_root_dir / station_code
     station_dir.mkdir(parents=True, exist_ok=True)
-    file_path = station_dir / f"{start_time:%Y%m%dT%H%M%S}__{end_time:%Y%m%dT%H%M%S}.xml"
+    file_stamp = request_date.strftime("%Y%m%d")
+    file_path = station_dir / f"{file_stamp}__{file_stamp}.xml"
     file_path.write_text(xml_text, encoding="utf-8")
     return file_path
 
@@ -195,7 +199,7 @@ def persist_station_frame(
             counts[variable] = 0
             continue
         rows = [
-            (observed_at.strftime("%Y-%m-%d %H:%M:%S"), float(value))
+            (observed_at.strftime("%Y-%m-%d %H:%M"), float(value))
             for observed_at, value in zip(variable_frame["observed_at"], variable_frame[variable])
         ]
         series_id: str | None = None
@@ -228,8 +232,8 @@ def ingest_observed_ana(
 
     run_id = build_run_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{run_id}.log")
-    raw_root_dir = interim_dir / "ana" / "raw"
-    raw_root_dir.mkdir(parents=True, exist_ok=True)
+    ana_root_dir = interim_dir / "ana"
+    reset_ana_interim_dir(ana_root_dir)
 
     with HistoryRepository(database_path) as repository:
         stations = repository.get_provider_stations("ana")
@@ -253,21 +257,19 @@ def ingest_observed_ana(
             station_written = {variable: 0 for variable in OBSERVED_VARIABLES}
             station_error = False
 
-            for start_time, end_time in iter_request_windows(reference_time, request_days):
+            for request_date in iter_request_dates(reference_time, request_days):
                 try:
                     xml_text = fetch_station_xml(
                         station_code,
-                        start_time=start_time,
-                        end_time=end_time,
+                        request_date=request_date,
                         base_url=base_url,
                         timeout_seconds=timeout_seconds,
                     )
                     raw_path = save_raw_xml(
                         xml_text,
-                        raw_root_dir=raw_root_dir,
+                        ana_root_dir=ana_root_dir,
                         station_code=station_code,
-                        start_time=start_time,
-                        end_time=end_time,
+                        request_date=request_date,
                     )
                     frame = parse_response(xml_text)
                     returned_codes = {
@@ -284,22 +286,22 @@ def ingest_observed_ana(
                         "station=%s station_uid=%s window_start=%s window_end=%s records=%s rain=%s level=%s flow=%s raw_xml=%s",
                         station_code,
                         station_uid,
-                        start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        request_date.strftime("%Y-%m-%d"),
+                        request_date.strftime("%Y-%m-%d"),
                         len(frame),
                         counts["rain"],
                         counts["level"],
                         counts["flow"],
                         raw_path,
                     )
-                except (requests.RequestException, ET.ParseError, ValueError) as exc:
+                except (requests.RequestException, ET.ParseError, ValueError, RuntimeError) as exc:
                     station_error = True
                     logger.error(
                         "station=%s station_uid=%s window_start=%s window_end=%s error=%s",
                         station_code,
                         station_uid,
-                        start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        request_date.strftime("%Y-%m-%d"),
+                        request_date.strftime("%Y-%m-%d"),
                         exc,
                     )
                     break

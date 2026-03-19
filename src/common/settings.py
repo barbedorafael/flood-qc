@@ -39,18 +39,18 @@ def _require_mapping(value: Any, context: str) -> dict[str, Any]:
 
 def _validate_reference_time(value: Any, context: str) -> None:
     if not isinstance(value, str):
-        raise ValueError(f"{context} deve ser string ISO ou 'now'.")
+        raise ValueError(f"{context} deve ser string ISO, 'now' ou 'yesterday'.")
     normalized = value.strip()
     if not normalized:
         raise ValueError(f"{context} nao pode ser vazio.")
-    if normalized == "now":
+    if normalized in {"now", "yesterday"}:
         return
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
     try:
         datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise ValueError(f"{context} deve ser string ISO valida ou 'now'.") from exc
+        raise ValueError(f"{context} deve ser string ISO valida, 'now' ou 'yesterday'.") from exc
 
 
 def _validate_positive_int(value: Any, context: str) -> None:
