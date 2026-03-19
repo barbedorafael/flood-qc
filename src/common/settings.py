@@ -113,8 +113,13 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "selected_mini_ids": _validate_selected_mini_ids,
         },
         "mgb": {
+            "input_days_before": _validate_positive_int,
             "output_days_before": _validate_positive_int,
             "output_days_after": _validate_positive_int,
+        },
+        "rainfall_interpolation": {
+            "nearest_stations": _validate_positive_int,
+            "power": _validate_positive_number,
         },
     }
     _validate_section(_require_mapping(settings, "config"), schema, "config")

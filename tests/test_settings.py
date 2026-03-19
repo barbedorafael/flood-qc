@@ -19,8 +19,13 @@ summaries:
   selected_mini_ids: [\"7601\"]
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """
 
 
@@ -32,7 +37,11 @@ summaries:
   selected_mini_ids: [\"7601\", \"7612\"]
 
 mgb:
+  input_days_before: 45
   output_days_after: 20
+
+rainfall_interpolation:
+  power: 3.0
 """
 
 
@@ -60,8 +69,11 @@ def test_load_settings_merges_default_and_custom(tmp_path, monkeypatch) -> None:
     assert settings["summaries"]["forecast_days"] == [1, 3, 10, 30]
     assert settings["summaries"]["accum_hours"] == [24, 72, 240, 720]
     assert settings["summaries"]["selected_mini_ids"] == ["7601", "7612"]
+    assert settings["mgb"]["input_days_before"] == 45
     assert settings["mgb"]["output_days_before"] == 30
     assert settings["mgb"]["output_days_after"] == 20
+    assert settings["rainfall_interpolation"]["nearest_stations"] == 5
+    assert settings["rainfall_interpolation"]["power"] == 3.0
 
 
 def test_load_settings_accepts_now_and_yesterday(tmp_path, monkeypatch) -> None:
@@ -81,8 +93,13 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
     )
     monkeypatch.setattr(settings_module, "CONFIG_DIR", tmp_path)
@@ -107,8 +124,13 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
     )
 
@@ -136,8 +158,13 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
             EMPTY_CUSTOM,
             "chaves obrigatorias",
@@ -158,8 +185,13 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
             EMPTY_CUSTOM,
             "chaves nao suportadas",
@@ -179,8 +211,13 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
             EMPTY_CUSTOM,
             "nao pode ser vazio",
@@ -200,8 +237,13 @@ summaries:
   selected_mini_ids: []
 
 mgb:
-  output_days_before: 0
+  input_days_before: 0
+  output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
             EMPTY_CUSTOM,
             "inteiro >= 1",
@@ -221,12 +263,95 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
+  output_days_before: 0
+  output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
+""",
+            EMPTY_CUSTOM,
+            "inteiro >= 1",
+        ),
+        (
+            """\
+run:
+  reference_time: \"2026-03-11T00:00:00\"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
   source: \"runner\"
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
 """,
             EMPTY_CUSTOM,
             "chaves nao suportadas",
+        ),
+        (
+            """\
+run:
+  reference_time: \"2026-03-11T00:00:00\"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  input_days_before: 30
+  output_days_before: 30
+  output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 0
+  power: 2.0
+""",
+            EMPTY_CUSTOM,
+            "inteiro >= 1",
+        ),
+        (
+            """\
+run:
+  reference_time: \"2026-03-11T00:00:00\"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  input_days_before: 30
+  output_days_before: 30
+  output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 0
+""",
+            EMPTY_CUSTOM,
+            "numero > 0",
         ),
         ("- item", EMPTY_CUSTOM, "esperado um objeto YAML"),
     ],

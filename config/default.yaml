@@ -11,5 +11,10 @@ summaries:
   selected_mini_ids: []
 
 mgb:
+  input_days_before: 30
   output_days_before: 30
   output_days_after: 15
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
