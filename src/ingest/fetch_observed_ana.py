@@ -198,8 +198,15 @@ def persist_station_frame(
             (observed_at.strftime("%Y-%m-%d %H:%M:%S"), float(value))
             for observed_at, value in zip(variable_frame["observed_at"], variable_frame[variable])
         ]
-        series_id = repository.ensure_observed_series(station_uid, variable, state)
-        counts[variable] = repository.upsert_observed_values(series_id, rows)
+        series_id: str | None = None
+        try:
+            series_id = repository.ensure_observed_series(station_uid, variable, state)
+            counts[variable] = repository.upsert_observed_values(series_id, rows)
+        except Exception as exc:
+            raise RuntimeError(
+                "Falha ao persistir observed_value "
+                f"station_uid={station_uid} variable={variable} state={state} series_id={series_id!r}."
+            ) from exc
     return counts
 
 

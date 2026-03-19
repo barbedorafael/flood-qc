@@ -75,6 +75,44 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
     assert values == [("2026-03-10 00:00:00", 3.5), ("2026-03-10 01:00:00", 2.0)]
 
 
+def test_history_repository_uses_existing_series_id_for_legacy_row(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        station_uid = connection.execute(
+            "SELECT station_uid FROM station WHERE provider_code = 'ana' ORDER BY station_code LIMIT 1"
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO observed_series (series_id, station_uid, variable_code, state)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("legacy.ana.rain.series", station_uid, "rain", "raw"),
+        )
+        connection.commit()
+
+    with HistoryRepository(db_path) as repository:
+        series_id = repository.ensure_observed_series(station_uid, "rain")
+        written = repository.upsert_observed_values(
+            series_id,
+            [("2026-03-10 00:00:00", 1.0)],
+        )
+
+    with sqlite3.connect(db_path) as connection:
+        series_rows = connection.execute(
+            "SELECT series_id, station_uid, variable_code, state FROM observed_series"
+        ).fetchall()
+        values = connection.execute(
+            "SELECT series_id, observed_at, value FROM observed_value ORDER BY observed_at"
+        ).fetchall()
+
+    assert series_id == "legacy.ana.rain.series"
+    assert written == 1
+    assert series_rows == [("legacy.ana.rain.series", station_uid, "rain", "raw")]
+    assert values == [("legacy.ana.rain.series", "2026-03-10 00:00:00", 1.0)]
+
+
 def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)

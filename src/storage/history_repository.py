@@ -70,21 +70,45 @@ class HistoryRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def _get_observed_series_id(self, station_uid: int, variable_code: str, state: str) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT series_id
+            FROM observed_series
+            WHERE station_uid = ? AND variable_code = ? AND state = ?
+            """,
+            (station_uid, variable_code, state),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["series_id"])
+
     def ensure_observed_series(self, station_uid: int, variable_code: str, state: str = "raw") -> str:
+        existing_series_id = self._get_observed_series_id(station_uid, variable_code, state)
+        if existing_series_id is not None:
+            return existing_series_id
+
         series_id = build_observed_series_id(station_uid, variable_code, state)
         self.connection.execute(
             """
-            INSERT OR IGNORE INTO observed_series (
+            INSERT INTO observed_series (
                 series_id,
                 station_uid,
                 variable_code,
                 state
             ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(station_uid, variable_code, state) DO NOTHING
             """,
             (series_id, station_uid, variable_code, state),
         )
         self.connection.commit()
-        return series_id
+        ensured_series_id = self._get_observed_series_id(station_uid, variable_code, state)
+        if ensured_series_id is None:
+            raise RuntimeError(
+                "Falha ao garantir observed_series "
+                f"station_uid={station_uid} variable_code={variable_code} state={state}."
+            )
+        return ensured_series_id
 
     def upsert_observed_values(self, series_id: str, rows: list[tuple[str, float]]) -> int:
         if not rows:
