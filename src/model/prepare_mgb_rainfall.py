@@ -18,7 +18,13 @@ if str(SRC_DIR) not in sys.path:
 
 from common.paths import history_db_path, logs_dir as default_logs_dir
 from common.settings import load_settings
-from model.prepare_mgb_parhig import DEFAULT_PARHIG, read_nc_from_parhig, read_time_settings_from_parhig
+from common.time_utils import resolve_reference_time
+from model.prepare_mgb_meta import (
+    DEFAULT_PARHIG,
+    build_mgb_window,
+    read_nc_from_parhig,
+    read_time_settings_from_parhig,
+)
 
 DEFAULT_HISTORY_DB = history_db_path()
 DEFAULT_MINI_GTP = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "MINI.gtp"
@@ -40,6 +46,7 @@ class RainfallPreparationSummary:
     nearest_stations: int
     power: float
     used_hourly_normalization: bool
+    forecast_hours: int
 
 
 def script_stem() -> str:
@@ -253,6 +260,30 @@ def build_hourly_station_matrix(
     return station_meta, station_matrix
 
 
+def extend_station_matrix_with_forecast(
+    station_matrix: np.ndarray,
+    *,
+    total_nt: int,
+    forecast_nt: int,
+    use_forecast_data: bool,
+) -> np.ndarray:
+    if forecast_nt < 0:
+        raise ValueError("forecast_nt must be >= 0.")
+    if total_nt < forecast_nt:
+        raise ValueError("total_nt must be >= forecast_nt.")
+    if station_matrix.shape[1] != total_nt:
+        raise ValueError(f"station_matrix shape mismatch: expected {total_nt} columns, found {station_matrix.shape[1]}.")
+    if forecast_nt == 0:
+        return station_matrix
+    if use_forecast_data:
+        raise NotImplementedError("Forecast rainfall ingestion is not implemented yet. Set mgb.use_forecast_data=false.")
+
+    observed_nt = total_nt - forecast_nt
+    extended = np.array(station_matrix, dtype=np.float64, copy=True)
+    extended[:, observed_nt:] = 0.0
+    return extended
+
+
 def build_idw_neighbors(
     mini_df: pd.DataFrame,
     station_df: pd.DataFrame,
@@ -353,13 +384,30 @@ def prepare_mgb_rainfall(
     if dt_seconds != 3600:
         raise ValueError(f"Only hourly rainfall input is currently supported; PARHIG DT={dt_seconds}.")
 
+    settings = load_settings()
+    reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    mgb_settings = settings["mgb"]
+    window = build_mgb_window(
+        reference_time,
+        input_days_before=int(mgb_settings["input_days_before"]),
+        forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    )
+    use_forecast_data = bool(mgb_settings["use_forecast_data"])
+    if start_time != window.start_time or nt != window.nt:
+        raise ValueError(
+            "PARHIG timing does not match current settings. "
+            f"Expected start_time={window.start_time.isoformat(timespec='seconds')} nt={window.nt}, "
+            f"found start_time={start_time.isoformat(timespec='seconds')} nt={nt}."
+        )
+
     end_time_exclusive = start_time + timedelta(seconds=nt * dt_seconds)
     nc = read_nc_from_parhig(parhig_path)
     mini_df = read_mini_centroids(mini_gtp_path, nc=nc)
     query_start = start_time - timedelta(hours=1)
+    observed_end_exclusive = window.forecast_start_time
 
     logger.info(
-        "rainfall_prepare_start history_db=%s parhig=%s mini_gtp=%s output=%s start_time=%s nt=%s nc=%s nearest=%s power=%s",
+        "rainfall_prepare_start history_db=%s parhig=%s mini_gtp=%s output=%s start_time=%s nt=%s nc=%s nearest=%s power=%s reference_time=%s forecast_start_time=%s forecast_nt=%s use_forecast_data=%s",
         history_db,
         parhig_path,
         mini_gtp_path,
@@ -369,6 +417,10 @@ def prepare_mgb_rainfall(
         nc,
         nearest_stations,
         power,
+        window.reference_time.isoformat(timespec="seconds"),
+        window.forecast_start_time.isoformat(timespec="seconds"),
+        window.forecast_nt,
+        use_forecast_data,
     )
 
     with _connect_history_read_only(history_db) as connection:
@@ -377,12 +429,18 @@ def prepare_mgb_rainfall(
             connection,
             preferred_stations,
             query_start=query_start,
-            query_end_exclusive=end_time_exclusive,
+            query_end_exclusive=observed_end_exclusive,
         )
 
     hourly_values, used_hourly_normalization = temporarily_normalize_rain_to_hourly(raw_values)
     time_index = pd.date_range(start=start_time, periods=nt, freq="h")
     station_meta, station_matrix = build_hourly_station_matrix(preferred_stations, hourly_values, time_index=time_index)
+    station_matrix = extend_station_matrix_with_forecast(
+        station_matrix,
+        total_nt=nt,
+        forecast_nt=window.forecast_nt,
+        use_forecast_data=use_forecast_data,
+    )
     nearest_idx, weights = build_idw_neighbors(
         mini_df,
         station_meta,
@@ -398,11 +456,12 @@ def prepare_mgb_rainfall(
     )
 
     logger.info(
-        "rainfall_prepare_done output=%s station_count=%s nt=%s nc=%s used_hourly_normalization=%s",
+        "rainfall_prepare_done output=%s station_count=%s nt=%s nc=%s forecast_nt=%s used_hourly_normalization=%s",
         output_path,
         len(station_meta),
         nt,
         nc,
+        window.forecast_nt,
         used_hourly_normalization,
     )
     return RainfallPreparationSummary(
@@ -416,6 +475,7 @@ def prepare_mgb_rainfall(
         nearest_stations=min(int(nearest_stations), len(station_meta)),
         power=float(power),
         used_hourly_normalization=used_hourly_normalization,
+        forecast_hours=window.forecast_nt,
     )
 
 

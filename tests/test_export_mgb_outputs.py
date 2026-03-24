@@ -114,7 +114,7 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
         output_db_path=output_db_path,
         schema_path=SCHEMA_PATH,
         output_days_before=30,
-        output_days_after=15,
+        forecast_horizon_days=15,
         chunk_hours=24,
     )
 
@@ -227,7 +227,7 @@ def test_export_mgb_outputs_requires_forecast_file(tmp_path, monkeypatch) -> Non
             output_db_path=tmp_path / "model_outputs.sqlite",
             schema_path=SCHEMA_PATH,
             output_days_before=30,
-            output_days_after=15,
+        forecast_horizon_days=15,
         )
 
 
@@ -243,7 +243,7 @@ def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) ->
             output_db_path=tmp_path / "model_outputs.sqlite",
             schema_path=SCHEMA_PATH,
             output_days_before=30,
-            output_days_after=15,
+        forecast_horizon_days=15,
         )
 
 
@@ -259,5 +259,5 @@ def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, 
             output_db_path=tmp_path / "model_outputs.sqlite",
             schema_path=SCHEMA_PATH,
             output_days_before=30,
-            output_days_after=15,
+        forecast_horizon_days=15,
         )

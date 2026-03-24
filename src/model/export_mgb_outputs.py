@@ -341,10 +341,10 @@ def validate_source_lengths(
     return normalized, nt_current, nt_forecast
 
 
-def build_export_window(reference_time: datetime, *, output_days_before: int, output_days_after: int) -> ExportWindow:
+def build_export_window(reference_time: datetime, *, output_days_before: int, forecast_horizon_days: int) -> ExportWindow:
     reference_date = reference_time.date()
     window_start = datetime.combine(reference_date - timedelta(days=output_days_before), time.min)
-    window_end_exclusive = datetime.combine(reference_date + timedelta(days=output_days_after + 1), time.min)
+    window_end_exclusive = datetime.combine(reference_date + timedelta(days=forecast_horizon_days + 1), time.min)
     return ExportWindow(
         reference_time=reference_time,
         reference_date=reference_date,
@@ -406,7 +406,7 @@ def iter_value_rows(
 def load_output_window_from_settings() -> tuple[int, int]:
     settings = load_settings()
     mgb_settings = settings["mgb"]
-    return int(mgb_settings["output_days_before"]), int(mgb_settings["output_days_after"])
+    return int(mgb_settings["output_days_before"]), int(mgb_settings["forecast_horizon_days"])
 
 
 def write_output_database(
@@ -562,7 +562,7 @@ def export_mgb_outputs(
     output_db_path: Path = DEFAULT_OUTPUT_DB,
     schema_path: Path = DEFAULT_SCHEMA_PATH,
     output_days_before: int | None = None,
-    output_days_after: int | None = None,
+    forecast_horizon_days: int | None = None,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
 ) -> ExportSummary:
     logger = configure_run_logger(default_logs_dir() / script_stem() / f"{build_execution_id()}.log")
@@ -578,15 +578,15 @@ def export_mgb_outputs(
     if chunk_hours <= 0:
         raise ValueError(f"chunk_hours must be > 0, got {chunk_hours}")
 
-    if output_days_before is None or output_days_after is None:
+    if output_days_before is None or forecast_horizon_days is None:
         default_before, default_after = load_output_window_from_settings()
         if output_days_before is None:
             output_days_before = default_before
-        if output_days_after is None:
-            output_days_after = default_after
+        if forecast_horizon_days is None:
+            forecast_horizon_days = default_after
 
-    if output_days_before < 0 or output_days_after < 0:
-        raise ValueError("output_days_before and output_days_after must be >= 0.")
+    if output_days_before < 0 or forecast_horizon_days < 0:
+        raise ValueError("output_days_before and forecast_horizon_days must be >= 0.")
 
     nc = read_nc_from_parhig(parhig_path)
     start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
@@ -606,7 +606,7 @@ def export_mgb_outputs(
     export_window = build_export_window(
         reference_time,
         output_days_before=output_days_before,
-        output_days_after=output_days_after,
+        forecast_horizon_days=forecast_horizon_days,
     )
     logger.info(
         "export_window reference_time=%s window_start=%s window_end_exclusive=%s",
