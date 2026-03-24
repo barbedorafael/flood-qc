@@ -63,6 +63,11 @@ def _validate_positive_number(value: Any, context: str) -> None:
         raise ValueError(f"{context} deve ser numero > 0.")
 
 
+def _validate_bool(value: Any, context: str) -> None:
+    if not isinstance(value, bool):
+        raise ValueError(f"{context} deve ser booleano.")
+
+
 def _validate_positive_int_list(value: Any, context: str) -> None:
     if not isinstance(value, list):
         raise ValueError(f"{context} deve ser lista de inteiros >= 1.")
@@ -115,7 +120,8 @@ def _validate_settings(settings: dict[str, Any]) -> None:
         "mgb": {
             "input_days_before": _validate_positive_int,
             "output_days_before": _validate_positive_int,
-            "output_days_after": _validate_positive_int,
+            "forecast_horizon_days": _validate_positive_int,
+            "use_forecast_data": _validate_bool,
         },
         "rainfall_interpolation": {
             "nearest_stations": _validate_positive_int,

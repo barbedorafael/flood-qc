@@ -21,7 +21,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -38,7 +39,7 @@ summaries:
 
 mgb:
   input_days_before: 45
-  output_days_after: 20
+  forecast_horizon_days: 20
 
 rainfall_interpolation:
   power: 3.0
@@ -71,7 +72,8 @@ def test_load_settings_merges_default_and_custom(tmp_path, monkeypatch) -> None:
     assert settings["summaries"]["selected_mini_ids"] == ["7601", "7612"]
     assert settings["mgb"]["input_days_before"] == 45
     assert settings["mgb"]["output_days_before"] == 30
-    assert settings["mgb"]["output_days_after"] == 20
+    assert settings["mgb"]["forecast_horizon_days"] == 20
+    assert settings["mgb"]["use_forecast_data"] is False
     assert settings["rainfall_interpolation"]["nearest_stations"] == 5
     assert settings["rainfall_interpolation"]["power"] == 3.0
 
@@ -95,7 +97,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -126,7 +129,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -160,7 +164,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -187,7 +192,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -213,7 +219,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -239,7 +246,8 @@ summaries:
 mgb:
   input_days_before: 0
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -265,7 +273,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 0
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -291,7 +300,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
   source: \"runner\"
 
 rainfall_interpolation:
@@ -318,7 +328,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 0
@@ -344,7 +355,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
@@ -352,6 +364,33 @@ rainfall_interpolation:
 """,
             EMPTY_CUSTOM,
             "numero > 0",
+        ),
+        (
+            """\
+run:
+  reference_time: \"2026-03-11T00:00:00\"
+
+ingest:
+  request_days: 7
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1]
+  accum_hours: [24]
+  selected_mini_ids: []
+
+mgb:
+  input_days_before: 30
+  output_days_before: 30
+  forecast_horizon_days: 15
+  use_forecast_data: "no"
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
+""",
+            EMPTY_CUSTOM,
+            "booleano",
         ),
         ("- item", EMPTY_CUSTOM, "esperado um objeto YAML"),
     ],

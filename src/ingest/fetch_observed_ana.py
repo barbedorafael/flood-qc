@@ -6,7 +6,6 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import requests
 
@@ -17,33 +16,15 @@ if str(SRC_DIR) not in sys.path:
 
 from common.paths import history_db_path, interim_dir as default_interim_dir, logs_dir as default_logs_dir
 from common.settings import load_settings
+from common.time_utils import TIMEZONE, resolve_reference_time
 from storage.history_repository import HistoryRepository
 
-
-TIMEZONE = ZoneInfo("America/Sao_Paulo")
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 OBSERVED_VARIABLES = ("rain", "level", "flow")
 
 
 def script_stem() -> str:
     return Path(__file__).stem
-
-
-def resolve_reference_time(raw_value: str | None) -> datetime:
-    now = datetime.now(TIMEZONE)
-    if raw_value in (None, "", "now"):
-        return now.replace(minute=0, second=0, microsecond=0, tzinfo=None)
-    if raw_value == "yesterday":
-        yesterday = now.date() - timedelta(days=1)
-        return datetime.combine(yesterday, datetime.min.time())
-
-    text = str(raw_value).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    reference_time = datetime.fromisoformat(text)
-    if reference_time.tzinfo is not None:
-        reference_time = reference_time.astimezone(TIMEZONE).replace(tzinfo=None)
-    return reference_time.replace(second=0, microsecond=0)
 
 
 def build_run_id(reference_time: datetime) -> str:

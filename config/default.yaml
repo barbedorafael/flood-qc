@@ -13,7 +13,8 @@ summaries:
 mgb:
   input_days_before: 30
   output_days_before: 30
-  output_days_after: 15
+  forecast_horizon_days: 15
+  use_forecast_data: false
 
 rainfall_interpolation:
   nearest_stations: 5
