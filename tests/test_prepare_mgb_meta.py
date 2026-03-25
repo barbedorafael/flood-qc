@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 from model.prepare_mgb_meta import build_mgb_window, rewrite_mgb_meta_from_config
 
@@ -23,24 +22,6 @@ Projeto Teste
 linha final preservada
 """
 
-
-PREVISAO_TEMPLATE = """\
-!Metadados de Arquivo de Previsao de Chuva
-!Projeto
-Chuva Observada
-
-!Nome do Arquivo Binario
-PrevisaoMINI_Estreito.mgb
-"""
-
-
-MINI_TEMPLATE = """\
-Mini Xcen Ycen
-1 -51.5 -29.5
-2 -52.5 -30.5
-"""
-
-
 def test_build_mgb_window_includes_forecast_horizon() -> None:
     window = build_mgb_window(
         datetime(2026, 3, 11, 23, 0, 0),
@@ -49,18 +30,12 @@ def test_build_mgb_window_includes_forecast_horizon() -> None:
     )
 
     assert window.start_time == datetime(2026, 3, 9, 0, 0, 0)
-    assert window.forecast_start_time == datetime(2026, 3, 12, 0, 0, 0)
-    assert window.forecast_nt == 49
     assert window.nt == 121
 
 
-def test_rewrite_mgb_meta_from_config_updates_parhig_and_previsao(tmp_path, monkeypatch) -> None:
+def test_rewrite_mgb_meta_from_config_updates_parhig(tmp_path, monkeypatch) -> None:
     parhig_path = tmp_path / "PARHIG.hig"
-    previsao_meta_path = tmp_path / "Previsao.meta"
-    mini_gtp_path = tmp_path / "MINI.gtp"
     parhig_path.write_text(PARHIG_TEMPLATE, encoding="latin-1")
-    previsao_meta_path.write_text(PREVISAO_TEMPLATE, encoding="latin-1")
-    mini_gtp_path.write_text(MINI_TEMPLATE, encoding="latin-1")
 
     monkeypatch.setattr(
         "model.prepare_mgb_meta.load_settings",
@@ -82,31 +57,18 @@ def test_rewrite_mgb_meta_from_config_updates_parhig_and_previsao(tmp_path, monk
 
     summary = rewrite_mgb_meta_from_config(
         parhig_path=parhig_path,
-        previsao_meta_path=previsao_meta_path,
-        mini_gtp_path=mini_gtp_path,
         logs_dir=tmp_path / "logs",
     )
 
     assert summary.reference_time == datetime(2026, 3, 11, 23, 0, 0)
     assert summary.start_time == datetime(2026, 3, 9, 0, 0, 0)
-    assert summary.forecast_start_time == datetime(2026, 3, 12, 0, 0, 0)
-    assert summary.forecast_nt == 49
     assert summary.nt == 121
-    assert summary.nc == 2
 
     updated_parhig = parhig_path.read_text(encoding="latin-1")
     assert "        09       03       2026        00" in updated_parhig
     assert "       121     3600." in updated_parhig
     assert "linha final preservada" in updated_parhig
 
-    updated_previsao = previsao_meta_path.read_text(encoding="latin-1")
-    assert "Chuva Observada" in updated_previsao
-    assert "PrevisaoMINI_Estreito.mgb" in updated_previsao
-    assert "2026    03    12    00     49" in updated_previsao
-    assert "    1   -29.50000   -51.50000" in updated_previsao
-    assert "    2   -30.50000   -52.50000" in updated_previsao
-
     log_path = tmp_path / "logs" / "prepare_mgb_meta" / "20260311T230000.log"
     assert log_path.exists()
     assert "mgb_meta_updated" in log_path.read_text(encoding="utf-8")
-

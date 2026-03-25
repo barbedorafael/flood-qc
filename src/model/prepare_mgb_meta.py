@@ -17,8 +17,6 @@ from common.settings import load_settings
 from common.time_utils import resolve_reference_time
 
 DEFAULT_PARHIG = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "PARHIG.hig"
-DEFAULT_PREVISAO_META = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "Previsao.meta"
-DEFAULT_MINI_GTP = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "MINI.gtp"
 DEFAULT_DT_SECONDS = 3600
 LOGGER_NAME = "floodqc.model.prepare_mgb_meta"
 
@@ -38,24 +36,12 @@ class MgbWindow:
 @dataclass(frozen=True, slots=True)
 class MgbMetaUpdateSummary:
     parhig_path: Path
-    previsao_meta_path: Path
-    mini_gtp_path: Path
     reference_time: datetime
     start_time: datetime
-    forecast_start_time: datetime
-    forecast_nt: int
     nt: int
-    nc: int
     dt_seconds: int
     input_days_before: int
     forecast_horizon_days: int
-
-
-@dataclass(frozen=True, slots=True)
-class MiniCentroid:
-    mini_id: int
-    lon: float
-    lat: float
 
 
 def script_stem() -> str:
@@ -197,110 +183,9 @@ def read_time_settings_from_parhig(parhig_path: Path) -> tuple[datetime, int, in
     return start_time, nt, dt_seconds
 
 
-def read_nc_from_parhig(parhig_path: Path) -> int:
-    lines = parhig_path.read_text(encoding="latin-1").splitlines()
-    for idx, raw_line in enumerate(lines):
-        if "NC" in raw_line.upper() and "NU" in raw_line.upper():
-            numbers = _extract_numbers(lines[_next_data_line_index(lines, idx)])
-            if numbers:
-                nc = int(float(numbers[0].replace(",", ".")))
-                if nc > 0:
-                    return nc
-    raise ValueError(f"Could not read NC from {parhig_path}")
-
-
-def read_mini_centroids(mini_gtp_path: Path, *, nc: int) -> list[MiniCentroid]:
-    header: list[str] | None = None
-    rows: list[MiniCentroid] = []
-
-    with mini_gtp_path.open("r", encoding="latin-1") as handle:
-        for raw_line in handle:
-            stripped = raw_line.strip()
-            if not stripped:
-                continue
-            parts = stripped.split()
-            if header is None:
-                header = parts
-                required = {"Mini", "Xcen", "Ycen"}
-                if not required.issubset(header):
-                    raise ValueError(f"MINI.gtp missing required columns {sorted(required)}: {mini_gtp_path}")
-                continue
-
-            mini_idx = header.index("Mini")
-            xcen_idx = header.index("Xcen")
-            ycen_idx = header.index("Ycen")
-            if len(parts) <= max(mini_idx, xcen_idx, ycen_idx):
-                raise ValueError(f"Invalid MINI.gtp row: {raw_line.rstrip()}")
-            rows.append(
-                MiniCentroid(
-                    mini_id=int(float(parts[mini_idx].replace(",", "."))),
-                    lon=float(parts[xcen_idx].replace(",", ".")),
-                    lat=float(parts[ycen_idx].replace(",", ".")),
-                )
-            )
-            if len(rows) == nc:
-                break
-
-    if len(rows) < nc:
-        raise ValueError(f"MINI.gtp has {len(rows)} rows, smaller than NC={nc}")
-
-    seen: set[int] = set()
-    duplicates: list[int] = []
-    for row in rows:
-        if row.mini_id in seen:
-            duplicates.append(row.mini_id)
-        seen.add(row.mini_id)
-    if duplicates:
-        raise ValueError(f"MINI.gtp has duplicated Mini ids (sample: {duplicates[:5]})")
-    return rows
-
-
-def _read_tagged_value(lines: list[str], label: str) -> str:
-    for idx, raw_line in enumerate(lines):
-        if raw_line.strip().upper() == label.upper():
-            return lines[_next_data_line_index(lines, idx)].strip()
-    raise ValueError(f"Could not find section {label!r} in Previsao.meta template.")
-
-
-def build_previsao_meta_text(
-    template_text: str,
-    *,
-    forecast_start_time: datetime,
-    forecast_nt: int,
-    mini_centroids: list[MiniCentroid],
-) -> str:
-    lines = template_text.splitlines()
-    project_name = _read_tagged_value(lines, "!Projeto")
-    binary_name = _read_tagged_value(lines, "!Nome do Arquivo Binario")
-
-    text_lines = [
-        "!Metadados de Arquivo de Previsao de Chuva",
-        "!Projeto",
-        project_name,
-        "",
-        "!Nome do Arquivo Binario",
-        binary_name,
-        "",
-        "!Data de Inicio",
-        "!ANO   MES   DIA  HORA   HORIZ(NT)",
-        f"{forecast_start_time.year:4d}    {forecast_start_time.month:02d}    {forecast_start_time.day:02d}    {forecast_start_time.hour:02d}     {forecast_nt}",
-        "",
-        "!Numero de Mini-Bacias",
-        f" {len(mini_centroids):4d} ",
-        "",
-        "!Lista de coordenadas dos centroides",
-        "!  IC\t LAT_dg    LONG_dg",
-    ]
-    for cell_index, centroid in enumerate(mini_centroids, start=1):
-        text_lines.append(f"{cell_index:5d}  {centroid.lat:10.5f}  {centroid.lon:10.5f}")
-    return "\n".join(text_lines) + "\n"
-
-
 def rewrite_mgb_meta_from_config(
     *,
     parhig_path: Path = DEFAULT_PARHIG,
-    previsao_meta_path: Path = DEFAULT_PREVISAO_META,
-    mini_gtp_path: Path = DEFAULT_MINI_GTP,
     logs_dir: Path = default_logs_dir(),
 ) -> MgbMetaUpdateSummary:
     settings = load_settings()
@@ -324,41 +209,21 @@ def rewrite_mgb_meta_from_config(
     )
     parhig_path.write_text(updated_parhig_text, encoding="latin-1")
 
-    nc = read_nc_from_parhig(parhig_path)
-    mini_centroids = read_mini_centroids(mini_gtp_path, nc=nc)
-    previsao_template = previsao_meta_path.read_text(encoding="latin-1")
-    previsao_text = build_previsao_meta_text(
-        previsao_template,
-        forecast_start_time=window.forecast_start_time,
-        forecast_nt=window.forecast_nt,
-        mini_centroids=mini_centroids,
-    )
-    previsao_meta_path.write_text(previsao_text, encoding="latin-1")
-
     logger.info(
-        "mgb_meta_updated parhig=%s previsao_meta=%s reference_time=%s start_time=%s forecast_start_time=%s nt=%s forecast_nt=%s dt_seconds=%s nc=%s input_days_before=%s forecast_horizon_days=%s",
+        "mgb_meta_updated parhig=%s reference_time=%s start_time=%s nt=%s dt_seconds=%s input_days_before=%s forecast_horizon_days=%s",
         parhig_path,
-        previsao_meta_path,
         window.reference_time.isoformat(timespec="seconds"),
         window.start_time.isoformat(timespec="seconds"),
-        window.forecast_start_time.isoformat(timespec="seconds"),
         window.nt,
-        window.forecast_nt,
         window.dt_seconds,
-        nc,
         input_days_before,
         forecast_horizon_days,
     )
     return MgbMetaUpdateSummary(
         parhig_path=parhig_path,
-        previsao_meta_path=previsao_meta_path,
-        mini_gtp_path=mini_gtp_path,
         reference_time=window.reference_time,
         start_time=window.start_time,
-        forecast_start_time=window.forecast_start_time,
-        forecast_nt=window.forecast_nt,
         nt=window.nt,
-        nc=nc,
         dt_seconds=window.dt_seconds,
         input_days_before=input_days_before,
         forecast_horizon_days=forecast_horizon_days,
@@ -366,15 +231,8 @@ def rewrite_mgb_meta_from_config(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Reescreve PARHIG.hig e Previsao.meta a partir da configuracao do run.")
+    parser = argparse.ArgumentParser(description="Reescreve PARHIG.hig a partir da configuracao do run.")
     parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="Arquivo PARHIG.hig a reescrever.")
-    parser.add_argument(
-        "--previsao-meta",
-        type=Path,
-        default=DEFAULT_PREVISAO_META,
-        help="Arquivo Previsao.meta a reescrever.",
-    )
-    parser.add_argument("--mini-gtp", type=Path, default=DEFAULT_MINI_GTP, help="Arquivo MINI.gtp.")
     return parser
 
 
@@ -382,18 +240,13 @@ def main() -> int:
     args = build_parser().parse_args()
     summary = rewrite_mgb_meta_from_config(
         parhig_path=args.parhig,
-        previsao_meta_path=args.previsao_meta,
-        mini_gtp_path=args.mini_gtp,
     )
     print(
         "mgb_meta_ready "
         f"parhig={summary.parhig_path} "
-        f"previsao_meta={summary.previsao_meta_path} "
         f"reference_time={summary.reference_time.isoformat(timespec='seconds')} "
         f"start_time={summary.start_time.isoformat(timespec='seconds')} "
-        f"forecast_start_time={summary.forecast_start_time.isoformat(timespec='seconds')} "
-        f"nt={summary.nt} "
-        f"forecast_nt={summary.forecast_nt}"
+        f"nt={summary.nt}"
     )
     return 0
 
