@@ -1,11 +1,16 @@
 # MGB Runner
 
-Camada dedicada para preparar e futuramente executar o MGB como processo externo em Windows.
+Esta pasta guarda apenas os artefatos do MGB:
 
-Uso esperado:
+- `Input/`: inputs locais versionados que serao copiados para `C:/mgb-hora/Input`
+- `Output/`: espelho local do `C:/mgb-hora/Output` apos cada execucao
+- `MGB_Inercial_PrevRS_FORTRAN.exe`: executavel Windows usado pelo runner
+
+O codigo do runner fica em `src/model/`.
+
+Uso:
 
 ```bash
-python apps/mgb_runner/main.py --run-db data/runs/20260310T120000.sqlite --dry-run
+python src/model/run_mgb.py --run-db data/runs/20260310T120000.sqlite --dry-run
+python src/model/run_mgb.py --run-db data/runs/20260310T120000.sqlite
 ```
-
-Nesta fase o runner apenas monta e exibe o plano de execucao. Nenhum binario real e chamado.

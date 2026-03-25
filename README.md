@@ -106,7 +106,6 @@ python src/storage/db_bootstrap.py --history
 python src/ingest/fetch_observed_ana.py
 python src/storage/db_bootstrap.py --run-id 20260310T120000
 streamlit run apps/ops_dashboard/app.py
-python apps/mgb_runner/main.py --run-db data/runs/20260310T120000.sqlite --dry-run
+python src/model/run_mgb.py --run-db data/runs/20260310T120000.sqlite --dry-run
 pytest
 ```
-

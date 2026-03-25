@@ -7,7 +7,7 @@ A arquitetura desta base e monorepo, local-first e orientada por arquivos. O sis
 Os componentes sao:
 
 - `apps/ops_dashboard`: interface operacional principal em Streamlit.
-- `apps/mgb_runner`: encapsulamento do modelo MGB como processo externo.
+- `apps/mgb_runner`: artefatos locais do MGB (`Input`, `Output`, `.exe`).
 - `apps/qgis_project`: convencoes para consumo espacial complementar.
 - `src/`: logica por dominio, separada entre ingestao, QC, modelo, storage e reporting.
 - `sql/`: schemas explicitos de SQLite.
@@ -44,7 +44,7 @@ QGIS nao e o centro da arquitetura. Ele entra como cliente sobre GeoPackages e G
 
 ### MGB isolado em um runner proprio
 
-O MGB e Windows-only e tem acoplamentos especificos de executavel, diretoria de trabalho e arquivos de entrada. Por isso ele fica encapsulado em `apps/mgb_runner`, separado da logica de ingestao, QC e reporting.
+O MGB e Windows-only e tem acoplamentos especificos de executavel, diretoria de trabalho e arquivos de entrada. Por isso a logica do runner fica em `src/model/`, enquanto os artefatos operacionais ficam em `apps/mgb_runner`, separados da logica de ingestao, QC e reporting.
 
 ## Trade-offs
 

@@ -31,7 +31,9 @@
 
 1. O runner do MGB le o banco do run.
 2. Registra `model_execution`, incluindo `setup_gpkg_path` para o catalogo espacial externo.
-3. Em fase futura, executa o modelo e grava a malha completa em `mgb_output_series` e `mgb_output_value`.
+3. Copia `apps/mgb_runner/Input` para `C:/mgb-hora/Input`, recria `C:/mgb-hora/Output` e executa o `.exe` local sem parametros.
+4. Espelha `C:/mgb-hora/Output` de volta para `apps/mgb_runner/Output`.
+5. Em seguida exporta a malha completa para `mgb_output_series` e `mgb_output_value`.
 
 ## QC de outputs
 
