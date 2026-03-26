@@ -326,6 +326,7 @@ def compute_observed_metrics(observed_df: pd.DataFrame) -> dict[str, object]:
 
 
 def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
+    """Carrega metadados do artefato completo de outputs exportado para visualizacao."""
     model_db_path = database_path or interim_dir() / "model_outputs.sqlite"
     with _connect(model_db_path) as connection:
         row = connection.execute(
@@ -354,6 +355,7 @@ def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
 
 
 def list_model_variables(database_path: Path | None = None) -> pd.DataFrame:
+    """Lista variaveis disponiveis no artefato completo de outputs do modelo."""
     model_db_path = database_path or interim_dir() / "model_outputs.sqlite"
     with _connect(model_db_path) as connection:
         variables = pd.read_sql_query(
@@ -377,6 +379,7 @@ def load_mgb_series(
     *,
     days_window: int = 30,
 ) -> pd.DataFrame:
+    """Le uma serie da malha completa exportada em model_outputs.sqlite."""
     model_db_path = database_path or interim_dir() / "model_outputs.sqlite"
     with _connect(model_db_path) as connection:
         df = pd.read_sql_query(
@@ -478,3 +481,4 @@ def load_rivers_layer_geojson(path: Path | None = None) -> dict | None:
         props["mini_id"] = mini_id
         props["click_id"] = f"MINI|{mini_id}"
     return payload
+

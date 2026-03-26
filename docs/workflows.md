@@ -12,34 +12,36 @@
 1. Aplicar regras por variavel e por serie.
 2. Registrar flags em `qc_flag` sem alterar o dado original.
 3. Promover dados entre `raw`, `curated` e `approved` conforme o processo.
-
-## Revisao manual
-
-1. Operador inspeciona flags e series.
-2. Ajustes sao registrados como `manual_edit`.
-3. Nenhum run automatico e editado em lugar.
-
-## Montagem do run
-
-1. Criar um novo `data/runs/<run_id>.sqlite`.
-2. Registrar o cabecalho em `run` com `parent_run_id` quando houver derivacao.
-3. Copiar os inputs aprovados para `run_input_series` e `run_input_value`.
-4. Registrar assets usados no run em `run_asset`, incluindo forecast original e editado quando aplicavel.
-5. Registrar derivados operacionais em `derived_series` e `derived_value`.
+4. Liberar os insumos aprovados para a execucao automatica do modelo.
 
 ## Execucao do modelo
 
-1. O runner do MGB le o banco do run.
-2. Registra `model_execution`, incluindo `setup_gpkg_path` para o catalogo espacial externo.
-3. Copia `apps/mgb_runner/Input` para `C:/mgb-hora/Input`, recria `C:/mgb-hora/Output` e executa o `.exe` local sem parametros.
-4. Espelha `C:/mgb-hora/Output` de volta para `apps/mgb_runner/Output`.
-5. Em seguida exporta a malha completa para `mgb_output_series` e `mgb_output_value`.
+1. Preparar os arquivos de input necessarios para o MGB a partir dos insumos aprovados.
+2. Copiar `apps/mgb_runner/Input` para `C:/mgb-hora/Input`, recriar `C:/mgb-hora/Output` e executar o `.exe` local sem parametros.
+3. Espelhar `C:/mgb-hora/Output` de volta para `apps/mgb_runner/Output`.
+4. Exportar a malha completa do modelo para o artefato externo `data/interim/model_outputs.sqlite`.
+5. Usar esse artefato completo como base para visualizacao, triagem e selecao do subset operacional.
 
 ## QC de outputs
 
 1. Validar coerencia minima dos resultados.
 2. Registrar flags e comparacoes com observados.
-3. Marcar outputs para revisao ou publicacao.
+3. Marcar outputs/celulas/series para composicao do run operacional.
+
+## Montagem do run
+
+1. Criar um novo `data/runs/<run_id>.sqlite` para o run automatico ou derivado.
+2. Registrar o cabecalho em `run`, com `parent_run_id` quando houver derivacao.
+3. Copiar os inputs aprovados efetivamente usados para `run_input_series` e `run_input_value`.
+4. Registrar assets usados no run em `run_asset`, incluindo o artefato completo de output e outros arquivos auxiliares relevantes.
+5. Materializar no run apenas o subset operacional dos outputs do modelo em `mgb_output_series` e `mgb_output_value`.
+6. Registrar derivados operacionais em `derived_series` e `derived_value`.
+
+## Revisao manual
+
+1. Operador inspeciona flags, series e o subset do run apoiado pelo dashboard e pelo artefato completo externo.
+2. Ajustes sao registrados como `manual_edit` em um run derivado quando houver intervencao manual.
+3. Nenhum run automatico e editado em lugar.
 
 ## Geracao de relatorio
 
@@ -63,5 +65,5 @@
 
 ## Run automatico vs run revisado
 
-- run automatico: gerado pela rotina padrao do dia;
-- run revisado: novo arquivo SQLite derivado, com `parent_run_id` apontando para o automatico.
+- run automatico: gerado apos QC automatico, execucao do modelo e materializacao do subset operacional do dia;
+- run revisado: novo arquivo SQLite derivado, com `parent_run_id` apontando para o automatico ja executado.

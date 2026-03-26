@@ -1,4 +1,4 @@
-﻿# Operacao e convencoes
+# Operacao e convencoes
 
 ## Setup local
 
@@ -28,7 +28,12 @@ Os paths canonicos e a URL base da ANA ficam fixos em codigo.
 
 - `raw`: dado ingerido sem revisao completa.
 - `curated`: dado tratado por regras automaticas ou pre-processamento.
-- `approved`: dado liberado para uso operacional ou para composicao de run.
+- `approved`: dado liberado para uso operacional e para alimentar a execucao automatica do modelo.
+
+## Artefato completo vs run
+
+- `data/interim/model_outputs.sqlite`: artefato completo dos outputs do modelo para visualizacao e triagem.
+- `data/runs/<run_id>.sqlite`: contexto operacional do run, com subset dos outputs realmente carregados para analise, rastreio e revisao.
 
 ## Como armazenar paths de raster
 
@@ -38,7 +43,7 @@ Guardar path relativo ao repositorio ou ao diretoria do run no banco. Nao armaze
 
 - nao sobrescrever dados de origem;
 - registrar flags e edicoes em tabelas append-only;
-- criar novo run manual em vez de editar um automatico existente.
+- criar novo run manual derivado em vez de editar um automatico ja executado.
 
 ## Provenance e audit trail
 

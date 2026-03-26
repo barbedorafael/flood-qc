@@ -1,1 +1,1 @@
-"""Montagem de run e execucao do modelo hidrologico."""
+"""Execucao do modelo hidrologico, export do output completo e materializacao do run."""

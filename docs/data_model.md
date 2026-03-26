@@ -19,12 +19,12 @@
 - `run`: cabecalho do run com `parent_run_id` quando derivado.
 - `run_input_series`: copia local das series usadas no run.
 - `run_input_value`: copia local dos valores usados no run.
-- `run_asset`: assets associados ao run, incluindo forecast original e editado.
+- `run_asset`: assets associados ao run, incluindo forecast original, editado e referencias ao artefato completo de output quando aplicavel.
 - `derived_series`: series derivadas dentro do run.
 - `derived_value`: valores derivados com suporte a janela temporal e horizonte.
 - `model_execution`: execucao do modelo e metadados do setup espacial externo.
-- `mgb_output_series`: normalizacao da malha completa do MGB por variavel, celula e `prev_flag`.
-- `mgb_output_value`: serie temporal dos outputs do MGB em formato long.
+- `mgb_output_series`: subset operacional dos outputs do MGB por variavel, celula e `prev_flag`.
+- `mgb_output_value`: serie temporal do subset de outputs materializado no run.
 - `qc_flag`: flags locais ao run.
 - `manual_edit`: ajustes manuais locais ao run.
 - `report_artifact`: produtos e relatorios gerados a partir do run.
@@ -50,9 +50,19 @@ Guarda o contexto fechado de uma execucao especifica:
 - copia local dos inputs realmente usados;
 - assets ligados ao run;
 - produtos derivados operacionais;
-- execucao do modelo;
-- outputs completos do MGB normalizados no proprio SQLite;
+- referencia e contexto da execucao do modelo;
+- subset operacional dos outputs do MGB normalizado no proprio SQLite;
 - relatorios e flags locais.
+
+### Artefato completo de outputs
+
+O output completo exportado do MGB fica fora do run, em `data/interim/model_outputs.sqlite`.
+
+Esse artefato intermediario existe para:
+
+- visualizacao ampla no dashboard;
+- triagem e exploracao da malha completa;
+- selecao do subset operacional que sera materializado no run.
 
 ## Convencoes de representacao
 
@@ -98,15 +108,17 @@ O banco do run guarda apenas a referencia desse setup em `model_execution.setup_
 
 ### Outputs do MGB
 
-Os outputs completos do MGB entram normalizados:
+No contrato atual, o output completo do MGB e exportado primeiro para `data/interim/model_outputs.sqlite`.
+
+O run guarda apenas o subset operacional desses outputs:
 
 - `mgb_output_series`: uma serie por `variable_code + cell_id + prev_flag`;
 - `mgb_output_value`: um valor por `series_id + dt`.
-- para export local de `model_outputs.sqlite`, `variable_code` canonico usa `q` para `QTUDO*` e `y` para `YTUDO*`;
+- para o artefato intermediario `model_outputs.sqlite`, `variable_code` canonico usa `q` para `QTUDO*` e `y` para `YTUDO*`;
 - `display_name` preserva o nome original do produto MGB (`QTUDO` e `YTUDO`);
 - `series_id` e deterministico no formato `<mini_id com zero a esquerda para 4 digitos>.<variable_code>.<sim|for>`, por exemplo `0539.q.sim`.
 
-Isso deixa o run auto-suficiente e facilita consultas por celula, variavel e tempo.
+Isso deixa o run mais aderente ao uso operacional e preserva a malha completa em um artefato intermediario proprio.
 
 ## Schemas implementados
 

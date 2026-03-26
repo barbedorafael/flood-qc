@@ -30,28 +30,28 @@ class ForecastGridCollector(Protocol):
 
 
 class AutomaticQcProcessor(Protocol):
-    """Contrato para avaliacao automatica de qualidade."""
+    """Contrato para avaliacao automatica de qualidade antes da execucao do modelo."""
 
     def run(self, run: RunMetadata) -> Iterable[QcFlag]:
         ...
 
 
 class ManualReviewService(Protocol):
-    """Contrato para registrar ajustes manuais sem sobrescrever a origem."""
+    """Contrato para registrar ajustes manuais sobre um run ja materializado."""
 
     def apply(self, run: RunMetadata, edits: Iterable[ManualEdit]) -> None:
         ...
 
 
 class RunAssembler(Protocol):
-    """Contrato para montagem dos inputs do run do modelo."""
+    """Contrato para materializar o run operacional a partir dos insumos e outputs selecionados."""
 
     def build(self, run: RunMetadata) -> Iterable[ModelInput]:
         ...
 
 
 class ModelExecutor(Protocol):
-    """Contrato para preparar e executar o modelo externo."""
+    """Contrato para preparar e executar o modelo externo a partir dos arquivos de input."""
 
     def prepare(self, run: RunMetadata) -> CommandPlan:
         ...
@@ -61,7 +61,7 @@ class ModelExecutor(Protocol):
 
 
 class PostProcessor(Protocol):
-    """Contrato para consolidacao dos outputs apos a execucao."""
+    """Contrato para exportar o output completo e preparar o subset operacional do run."""
 
     def process(self, run: RunMetadata) -> Iterable[ModelOutput]:
         ...
