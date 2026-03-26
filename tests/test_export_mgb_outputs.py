@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +18,16 @@ def configure_export_logging(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr("model.export_mgb_outputs.default_logs_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr("model.export_mgb_outputs.build_execution_id", lambda: "20260101T120000")
     return tmp_path / "logs" / "export_mgb_outputs" / "20260101T120000.log"
+
+
+def patch_settings(monkeypatch, reference_time: str) -> None:
+    monkeypatch.setattr(
+        "model.export_mgb_outputs.load_settings",
+        lambda: {
+            "run": {"reference_time": reference_time},
+            "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
+        },
+    )
 
 
 def write_parhig(path: Path, *, start_time: datetime, nc: int, dt_seconds: int = 3600) -> None:
@@ -55,9 +65,8 @@ def build_dataset(
     tmp_path: Path,
     *,
     mini_ids: list[int] | None = None,
-    current_nt: int = 960,
-    forecast_nt: int = 480,
-    y_forecast_nt: int | None = None,
+    total_nt: int = 1440,
+    y_total_nt: int | None = None,
 ) -> dict[str, Path | list[int] | datetime | int]:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -67,20 +76,16 @@ def build_dataset(
     start_time = datetime(2026, 1, 1, 0, 0, 0)
     mini_values = mini_ids or [101, 202]
     nc = len(mini_values)
-    y_forecast_nt = forecast_nt if y_forecast_nt is None else y_forecast_nt
+    y_total_nt = total_nt if y_total_nt is None else y_total_nt
 
     write_parhig(input_dir / "PARHIG.hig", start_time=start_time, nc=nc)
     write_mini(input_dir / "MINI.gtp", mini_values)
 
-    q_current = np.arange(nc * current_nt, dtype=np.float32).reshape(nc, current_nt)
-    q_forecast = (100000 + np.arange(nc * forecast_nt, dtype=np.float32)).reshape(nc, forecast_nt)
-    y_current = (200000 + np.arange(nc * current_nt, dtype=np.float32)).reshape(nc, current_nt)
-    y_forecast = (300000 + np.arange(nc * y_forecast_nt, dtype=np.float32)).reshape(nc, y_forecast_nt)
+    q_values = np.arange(nc * total_nt, dtype=np.float32).reshape(nc, total_nt)
+    y_values = (200000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(nc, y_total_nt)
 
-    write_output(output_dir / "QTUDO_Inercial_Atual.MGB", q_current)
-    write_output(output_dir / "QTUDO_Inercial_Prev.MGB", q_forecast)
-    write_output(output_dir / "YTUDO.MGB", y_current)
-    write_output(output_dir / "YTUDO_prev.MGB", y_forecast)
+    write_output(output_dir / "QTUDO.MGB", q_values)
+    write_output(output_dir / "YTUDO.MGB", y_values)
 
     return {
         "parhig_path": input_dir / "PARHIG.hig",
@@ -88,13 +93,12 @@ def build_dataset(
         "output_dir": output_dir,
         "start_time": start_time,
         "mini_ids": mini_values,
-        "current_nt": current_nt,
-        "forecast_nt": forecast_nt,
+        "total_nt": total_nt,
     }
-
 
 def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
+    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     output_db_path = tmp_path / "data" / "interim" / "model_outputs.sqlite"
     output_db_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = configure_export_logging(tmp_path, monkeypatch)
@@ -118,9 +122,8 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
         chunk_hours=24,
     )
 
-    reference_time = dataset["start_time"] + timedelta(hours=int(dataset["current_nt"]) - 1)
     assert summary.database_path == output_db_path
-    assert summary.reference_time == reference_time
+    assert summary.reference_time == datetime(2026, 2, 9, 23, 0, 0)
     assert summary.window_start == datetime(2026, 1, 10, 0, 0, 0)
     assert summary.window_end_exclusive == datetime(2026, 2, 25, 0, 0, 0)
     assert summary.nt_current == 960
@@ -132,6 +135,8 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
     log_text = log_file.read_text(encoding="utf-8")
     assert "export_start" in log_text
     assert "chunk_written variable=q prev=sim" in log_text
+    assert "chunk_written variable=q prev=for" in log_text
+    assert "nt_resolved nt_total=1440 nt_current=960 nt_forecast=480" in log_text
     assert "export_done" in log_text
 
     with sqlite3.connect(output_db_path) as connection:
@@ -155,11 +160,6 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
             960,
             480,
         )
-
-        variable_rows = connection.execute(
-            "SELECT variable_code, display_name, unit FROM variable ORDER BY variable_code"
-        ).fetchall()
-        assert variable_rows == [("q", "QTUDO", "m3/s"), ("y", "YTUDO", "m")]
 
         series_rows = connection.execute(
             "SELECT series_id, variable_code, mini_id, prev_flag "
@@ -204,7 +204,27 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
             "ORDER BY v.dt LIMIT 1"
         ).fetchone()[0]
         assert current_first_value == 216.0
-        assert forecast_first_value == 100000.0
+        assert forecast_first_value == 960.0
+
+
+def test_export_mgb_outputs_resolves_date_only_reference_time(tmp_path, monkeypatch) -> None:
+    dataset = build_dataset(tmp_path)
+    patch_settings(monkeypatch, "2026-02-09")
+    configure_export_logging(tmp_path, monkeypatch)
+
+    summary = export_mgb_outputs(
+        parhig_path=dataset["parhig_path"],
+        mini_gtp_path=dataset["mini_gtp_path"],
+        output_dir=dataset["output_dir"],
+        output_db_path=tmp_path / "model_outputs.sqlite",
+        schema_path=SCHEMA_PATH,
+        output_days_before=30,
+        forecast_horizon_days=15,
+    )
+
+    assert summary.reference_time == datetime(2026, 2, 9, 23, 0, 0)
+    assert summary.nt_current == 960
+    assert summary.nt_forecast == 480
 
 
 def test_build_output_series_id_zero_pads_mini_id() -> None:
@@ -213,11 +233,11 @@ def test_build_output_series_id_zero_pads_mini_id() -> None:
     assert build_output_series_id(539, "q", 0) == "0539.q.sim"
     assert build_output_series_id(539, "q", 1) == "0539.q.for"
 
-
-def test_export_mgb_outputs_requires_forecast_file(tmp_path, monkeypatch) -> None:
+def test_export_mgb_outputs_requires_single_source_file(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
+    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
-    Path(dataset["output_dir"]).joinpath("YTUDO_prev.MGB").unlink()
+    Path(dataset["output_dir"]).joinpath("YTUDO.MGB").unlink()
 
     with pytest.raises(FileNotFoundError, match="YTUDO"):
         export_mgb_outputs(
@@ -227,12 +247,13 @@ def test_export_mgb_outputs_requires_forecast_file(tmp_path, monkeypatch) -> Non
             output_db_path=tmp_path / "model_outputs.sqlite",
             schema_path=SCHEMA_PATH,
             output_days_before=30,
-        forecast_horizon_days=15,
+            forecast_horizon_days=15,
         )
 
 
 def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, mini_ids=[101, 101])
+    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="duplicated Mini ids"):
@@ -243,15 +264,16 @@ def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) ->
             output_db_path=tmp_path / "model_outputs.sqlite",
             schema_path=SCHEMA_PATH,
             output_days_before=30,
-        forecast_horizon_days=15,
+            forecast_horizon_days=15,
         )
 
 
 def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, monkeypatch) -> None:
-    dataset = build_dataset(tmp_path, y_forecast_nt=120)
+    dataset = build_dataset(tmp_path, total_nt=1440, y_total_nt=120)
+    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match="Inconsistent NT"):
+    with pytest.raises(ValueError, match="Inconsistent NT across outputs"):
         export_mgb_outputs(
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
@@ -259,5 +281,66 @@ def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, 
             output_db_path=tmp_path / "model_outputs.sqlite",
             schema_path=SCHEMA_PATH,
             output_days_before=30,
-        forecast_horizon_days=15,
+            forecast_horizon_days=15,
+        )
+
+
+def test_export_mgb_outputs_allows_cutoff_at_last_available_timestamp(tmp_path, monkeypatch) -> None:
+    dataset = build_dataset(tmp_path, total_nt=48)
+    patch_settings(monkeypatch, "2026-01-02T23:00:00")
+    configure_export_logging(tmp_path, monkeypatch)
+    output_db_path = tmp_path / "model_outputs.sqlite"
+
+    summary = export_mgb_outputs(
+        parhig_path=dataset["parhig_path"],
+        mini_gtp_path=dataset["mini_gtp_path"],
+        output_dir=dataset["output_dir"],
+        output_db_path=output_db_path,
+        schema_path=SCHEMA_PATH,
+        output_days_before=1,
+        forecast_horizon_days=0,
+    )
+
+    assert summary.nt_current == 48
+    assert summary.nt_forecast == 0
+
+    with sqlite3.connect(output_db_path) as connection:
+        forecast_rows = connection.execute(
+            "SELECT COUNT(*) FROM output_value v "
+            "JOIN output_series s ON s.series_id = v.series_id "
+            "WHERE s.prev_flag = 1"
+        ).fetchone()[0]
+        assert forecast_rows == 0
+
+def test_export_mgb_outputs_rejects_cutoff_before_available_range(tmp_path, monkeypatch) -> None:
+    dataset = build_dataset(tmp_path, total_nt=48)
+    patch_settings(monkeypatch, "2025-12-31T23:00:00")
+    configure_export_logging(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="before the available output start"):
+        export_mgb_outputs(
+            parhig_path=dataset["parhig_path"],
+            mini_gtp_path=dataset["mini_gtp_path"],
+            output_dir=dataset["output_dir"],
+            output_db_path=tmp_path / "model_outputs.sqlite",
+            schema_path=SCHEMA_PATH,
+            output_days_before=1,
+            forecast_horizon_days=0,
+        )
+
+
+def test_export_mgb_outputs_rejects_cutoff_after_available_range(tmp_path, monkeypatch) -> None:
+    dataset = build_dataset(tmp_path, total_nt=48)
+    patch_settings(monkeypatch, "2026-01-03T00:00:00")
+    configure_export_logging(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="exceeds the available output end"):
+        export_mgb_outputs(
+            parhig_path=dataset["parhig_path"],
+            mini_gtp_path=dataset["mini_gtp_path"],
+            output_dir=dataset["output_dir"],
+            output_db_path=tmp_path / "model_outputs.sqlite",
+            schema_path=SCHEMA_PATH,
+            output_days_before=1,
+            forecast_horizon_days=0,
         )

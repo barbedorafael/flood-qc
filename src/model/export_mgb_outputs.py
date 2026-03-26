@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
 
 from common.paths import SQL_DIR, interim_dir, logs_dir as default_logs_dir
 from common.settings import load_settings
+from common.time_utils import resolve_reference_time
 
 
 DEFAULT_PARHIG = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "PARHIG.hig"
@@ -25,7 +26,7 @@ DEFAULT_MINI_GTP = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "MINI.gtp"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Output"
 DEFAULT_OUTPUT_DB = interim_dir() / "model_outputs.sqlite"
 DEFAULT_SCHEMA_PATH = SQL_DIR / "model_outputs_schema.sql"
-DEFAULT_CHUNK_HOURS = 720  # 30 days worth of hourly data, can be adjusted based on memory constraints and performance testing
+DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 LOGGER_NAME = "floodqc.model.export_mgb_outputs"
 
@@ -41,10 +42,8 @@ class VariableSpec:
 @dataclass(frozen=True, slots=True)
 class OutputSource:
     variable_code: str
-    prev_flag: int
     path: Path
-    nt: int
-    global_start_offset: int
+    nt_total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,9 +252,8 @@ def infer_nt_from_binary(file_path: Path, *, nc: int) -> int:
         raise ValueError(f"Invalid NT inferred for {file_path.name}: NT={nt}")
     return int(nt)
 
-
-def discover_output_sources(output_dir: Path, *, nc: int) -> dict[str, dict[int, OutputSource]]:
-    sources: dict[str, dict[int, OutputSource]] = {}
+def discover_output_sources(output_dir: Path, *, nc: int) -> dict[str, OutputSource]:
+    sources: dict[str, OutputSource] = {}
     logger = logging.getLogger(LOGGER_NAME)
 
     for spec in VARIABLE_SPECS:
@@ -266,79 +264,29 @@ def discover_output_sources(output_dir: Path, *, nc: int) -> dict[str, dict[int,
         ]
         if not matches:
             raise FileNotFoundError(f"No files found for {spec.source_prefix} in {output_dir}")
-
-        classified: dict[int, list[Path]] = {0: [], 1: []}
-        for path in matches:
-            prev_flag = 1 if "PREV" in path.stem.upper() else 0
-            classified[prev_flag].append(path)
-
-        if len(classified[0]) != 1 or len(classified[1]) != 1:
+        if len(matches) != 1:
             names = sorted(path.name for path in matches)
             raise FileNotFoundError(
-                f"Expected exactly one current file and one forecast file for {spec.source_prefix} in {output_dir}. "
-                f"Found: {names}"
+                f"Expected exactly one file for {spec.source_prefix} in {output_dir}. Found: {names}"
             )
 
-        sources[spec.variable_code] = {
-            prev_flag: OutputSource(
-                variable_code=spec.variable_code,
-                prev_flag=prev_flag,
-                path=classified[prev_flag][0],
-                nt=infer_nt_from_binary(classified[prev_flag][0], nc=nc),
-                global_start_offset=0,
-            )
-            for prev_flag in (0, 1)
-        }
-        for prev_flag in (0, 1):
-            source = sources[spec.variable_code][prev_flag]
-            logger.info(
-                "source variable=%s prev=%s path=%s nt=%s",
-                spec.variable_code,
-                prev_flag_label(prev_flag),
-                source.path,
-                source.nt,
-            )
+        source = OutputSource(
+            variable_code=spec.variable_code,
+            path=matches[0],
+            nt_total=infer_nt_from_binary(matches[0], nc=nc),
+        )
+        sources[spec.variable_code] = source
+        logger.info("source variable=%s path=%s nt_total=%s", spec.variable_code, source.path, source.nt_total)
 
     return sources
 
 
-def validate_source_lengths(
-    sources: dict[str, dict[int, OutputSource]]
-) -> tuple[dict[str, dict[int, OutputSource]], int, int]:
-    nt_current_values = {variable_code: source_map[0].nt for variable_code, source_map in sources.items()}
-    nt_forecast_values = {variable_code: source_map[1].nt for variable_code, source_map in sources.items()}
-
-    nt_current_set = set(nt_current_values.values())
-    if len(nt_current_set) != 1:
-        raise ValueError(f"Inconsistent NT for current outputs: {nt_current_values}")
-
-    nt_forecast_set = set(nt_forecast_values.values())
-    if len(nt_forecast_set) != 1:
-        raise ValueError(f"Inconsistent NT for forecast outputs: {nt_forecast_values}")
-
-    nt_current = nt_current_set.pop()
-    nt_forecast = nt_forecast_set.pop()
-
-    normalized: dict[str, dict[int, OutputSource]] = {}
-    for variable_code, source_map in sources.items():
-        normalized[variable_code] = {
-            0: OutputSource(
-                variable_code=variable_code,
-                prev_flag=0,
-                path=source_map[0].path,
-                nt=source_map[0].nt,
-                global_start_offset=0,
-            ),
-            1: OutputSource(
-                variable_code=variable_code,
-                prev_flag=1,
-                path=source_map[1].path,
-                nt=source_map[1].nt,
-                global_start_offset=nt_current,
-            ),
-        }
-
-    return normalized, nt_current, nt_forecast
+def validate_source_lengths(sources: dict[str, OutputSource]) -> tuple[dict[str, OutputSource], int]:
+    nt_values = {variable_code: source.nt_total for variable_code, source in sources.items()}
+    nt_set = set(nt_values.values())
+    if len(nt_set) != 1:
+        raise ValueError(f"Inconsistent NT across outputs: {nt_values}")
+    return sources, nt_set.pop()
 
 
 def build_export_window(reference_time: datetime, *, output_days_before: int, forecast_horizon_days: int) -> ExportWindow:
@@ -409,12 +357,52 @@ def load_output_window_from_settings() -> tuple[int, int]:
     return int(mgb_settings["output_days_before"]), int(mgb_settings["forecast_horizon_days"])
 
 
+def load_simulation_reference_time_from_settings() -> datetime:
+    settings = load_settings()
+    return resolve_reference_time(settings["run"]["reference_time"])
+
+
+def compute_nt_current(
+    *,
+    start_time: datetime,
+    dt_seconds: int,
+    reference_time: datetime,
+    nt_total: int,
+) -> tuple[int, int]:
+    if reference_time < start_time:
+        raise ValueError(
+            f"Configured reference_time {reference_time.isoformat(timespec='seconds')} "
+            f"is before the available output start {start_time.isoformat(timespec='seconds')}."
+        )
+
+    delta_seconds = int((reference_time - start_time).total_seconds())
+    if delta_seconds % dt_seconds != 0:
+        raise ValueError(
+            f"Configured reference_time {reference_time.isoformat(timespec='seconds')} "
+            f"is not aligned to dt_seconds={dt_seconds}."
+        )
+
+    nt_current = delta_seconds // dt_seconds + 1
+    if nt_current < 1:
+        raise ValueError(f"Invalid nt_current computed from reference_time={reference_time.isoformat(timespec='seconds')}.")
+    if nt_current > nt_total:
+        last_available_time = start_time + timedelta(seconds=(nt_total - 1) * dt_seconds)
+        raise ValueError(
+            f"Configured reference_time {reference_time.isoformat(timespec='seconds')} "
+            f"exceeds the available output end {last_available_time.isoformat(timespec='seconds')}."
+        )
+
+    nt_forecast = nt_total - nt_current
+    if nt_forecast < 0:
+        raise ValueError(f"Invalid nt_forecast computed from nt_total={nt_total} and nt_current={nt_current}.")
+    return nt_current, nt_forecast
+
 def write_output_database(
     *,
     database_path: Path,
     schema_path: Path,
     mini_ids: list[int],
-    sources: dict[str, dict[int, OutputSource]],
+    sources: dict[str, OutputSource],
     start_time: datetime,
     dt_seconds: int,
     export_window: ExportWindow,
@@ -471,71 +459,86 @@ def write_output_database(
         logger.info("series_inserted count=%s", len(series_rows))
 
         for spec in VARIABLE_SPECS:
-            for prev_flag in (0, 1):
-                source = sources[spec.variable_code][prev_flag]
-                source_global_start = source.global_start_offset
-                source_global_end = source.global_start_offset + source.nt
-                overlap_start = max(global_start_offset, source_global_start)
-                overlap_end = min(global_end_offset, source_global_end)
-                if overlap_start >= overlap_end:
-                    logger.info(
-                        "series_skip variable=%s prev=%s reason=no_overlap",
-                        spec.variable_code,
-                        prev_flag_label(prev_flag),
-                    )
-                    continue
+            source = sources[spec.variable_code]
+            overlap_start = global_start_offset
+            overlap_end = min(global_end_offset, source.nt_total)
+            if overlap_start >= overlap_end:
+                logger.info("series_skip variable=%s reason=no_overlap", spec.variable_code)
+                continue
 
-                local_start = overlap_start - source_global_start
-                local_end = overlap_end - source_global_start
-                matrix = np.memmap(source.path, dtype=np.float32, mode="r", shape=(len(mini_ids), source.nt))
-                series_ids_by_mini = series_lookup[(spec.variable_code, prev_flag)]
-                logger.info(
-                    "series_start variable=%s prev=%s local_start=%s local_end=%s source_nt=%s",
-                    spec.variable_code,
-                    prev_flag_label(prev_flag),
-                    local_start,
-                    local_end,
-                    source.nt,
-                )
+            matrix = np.memmap(source.path, dtype=np.float32, mode="r", shape=(len(mini_ids), source.nt_total))
+            logger.info(
+                "series_start variable=%s local_start=%s local_end=%s source_nt=%s",
+                spec.variable_code,
+                overlap_start,
+                overlap_end,
+                source.nt_total,
+            )
 
-                try:
-                    for chunk_start in range(local_start, local_end, chunk_hours):
-                        chunk_end = min(chunk_start + chunk_hours, local_end)
-                        values_chunk = np.asarray(matrix[:, chunk_start:chunk_end], dtype=np.float32)
-                        dt_values = [
-                            _isoformat_seconds(
-                                start_time + timedelta(seconds=(source_global_start + offset) * dt_seconds)
-                            )
-                            for offset in range(chunk_start, chunk_end)
+            try:
+                for chunk_start in range(overlap_start, overlap_end, chunk_hours):
+                    chunk_end = min(chunk_start + chunk_hours, overlap_end)
+                    values_chunk = np.asarray(matrix[:, chunk_start:chunk_end], dtype=np.float32)
+
+                    sim_chunk_end = min(chunk_end, nt_current)
+                    if chunk_start < sim_chunk_end:
+                        sim_dt_values = [
+                            _isoformat_seconds(start_time + timedelta(seconds=offset * dt_seconds))
+                            for offset in range(chunk_start, sim_chunk_end)
                         ]
                         connection.executemany(
                             "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
                             iter_value_rows(
-                                values_chunk,
-                                dt_values=dt_values,
+                                values_chunk[:, : sim_chunk_end - chunk_start],
+                                dt_values=sim_dt_values,
                                 mini_ids=mini_ids,
-                                series_ids_by_mini=series_ids_by_mini,
+                                series_ids_by_mini=series_lookup[(spec.variable_code, 0)],
                             ),
                         )
-                        chunk_value_count = len(mini_ids) * (chunk_end - chunk_start)
-                        value_count += chunk_value_count
+                        sim_value_count = len(mini_ids) * (sim_chunk_end - chunk_start)
+                        value_count += sim_value_count
                         logger.info(
                             "chunk_written variable=%s prev=%s chunk_start=%s chunk_end=%s values=%s dt_start=%s dt_end=%s",
                             spec.variable_code,
-                            prev_flag_label(prev_flag),
+                            prev_flag_label(0),
                             chunk_start,
-                            chunk_end,
-                            chunk_value_count,
-                            dt_values[0],
-                            dt_values[-1],
+                            sim_chunk_end,
+                            sim_value_count,
+                            sim_dt_values[0],
+                            sim_dt_values[-1],
                         )
-                finally:
-                    del matrix
-                logger.info(
-                    "series_done variable=%s prev=%s",
-                    spec.variable_code,
-                    prev_flag_label(prev_flag),
-                )
+
+                    forecast_chunk_start = max(chunk_start, nt_current)
+                    if forecast_chunk_start < chunk_end:
+                        forecast_dt_values = [
+                            _isoformat_seconds(start_time + timedelta(seconds=offset * dt_seconds))
+                            for offset in range(forecast_chunk_start, chunk_end)
+                        ]
+                        forecast_slice_start = forecast_chunk_start - chunk_start
+                        connection.executemany(
+                            "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
+                            iter_value_rows(
+                                values_chunk[:, forecast_slice_start:],
+                                dt_values=forecast_dt_values,
+                                mini_ids=mini_ids,
+                                series_ids_by_mini=series_lookup[(spec.variable_code, 1)],
+                            ),
+                        )
+                        forecast_value_count = len(mini_ids) * (chunk_end - forecast_chunk_start)
+                        value_count += forecast_value_count
+                        logger.info(
+                            "chunk_written variable=%s prev=%s chunk_start=%s chunk_end=%s values=%s dt_start=%s dt_end=%s",
+                            spec.variable_code,
+                            prev_flag_label(1),
+                            forecast_chunk_start,
+                            chunk_end,
+                            forecast_value_count,
+                            forecast_dt_values[0],
+                            forecast_dt_values[-1],
+                        )
+            finally:
+                del matrix
+            logger.info("series_done variable=%s", spec.variable_code)
 
         connection.commit()
     finally:
@@ -552,7 +555,6 @@ def write_output_database(
         series_count=len(series_rows),
         value_count=value_count,
     )
-
 
 def export_mgb_outputs(
     *,
@@ -590,19 +592,26 @@ def export_mgb_outputs(
 
     nc = read_nc_from_parhig(parhig_path)
     start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
+    reference_time = load_simulation_reference_time_from_settings()
     mini_ids = read_mini_ids(mini_gtp_path, nc=nc)
     logger.info(
-        "inputs_loaded nc=%s start_time=%s dt_seconds=%s mini_count=%s",
+        "inputs_loaded nc=%s start_time=%s dt_seconds=%s mini_count=%s reference_time=%s",
         nc,
         _isoformat_seconds(start_time),
         dt_seconds,
         len(mini_ids),
+        _isoformat_seconds(reference_time),
     )
     raw_sources = discover_output_sources(output_dir, nc=nc)
-    sources, nt_current, nt_forecast = validate_source_lengths(raw_sources)
-    logger.info("nt_resolved nt_current=%s nt_forecast=%s", nt_current, nt_forecast)
+    sources, nt_total = validate_source_lengths(raw_sources)
+    nt_current, nt_forecast = compute_nt_current(
+        start_time=start_time,
+        dt_seconds=dt_seconds,
+        reference_time=reference_time,
+        nt_total=nt_total,
+    )
+    logger.info("nt_resolved nt_total=%s nt_current=%s nt_forecast=%s", nt_total, nt_current, nt_forecast)
 
-    reference_time = start_time + timedelta(seconds=(nt_current - 1) * dt_seconds)
     export_window = build_export_window(
         reference_time,
         output_days_before=output_days_before,
