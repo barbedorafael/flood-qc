@@ -19,10 +19,11 @@ if str(SRC_DIR) not in sys.path:
 from common.paths import history_db_path, logs_dir as default_logs_dir
 from common.settings import load_settings
 from common.time_utils import resolve_reference_time
+from ingest.forecast_grid import ECMWF_ASSET_KIND, read_tp_grib_messages
+from model.export_mgb_outputs import read_nc_from_parhig
 from model.prepare_mgb_meta import (
     DEFAULT_PARHIG,
     build_mgb_window,
-    read_nc_from_parhig,
     read_time_settings_from_parhig,
 )
 
@@ -256,8 +257,52 @@ def build_hourly_station_matrix(
         raise ValueError("No rain stations with valid values were found for the requested simulation window.")
 
     station_meta = preferred_stations.set_index("station_uid").loc[available_station_ids].reset_index()
-    station_matrix = pivoted.reindex(columns=available_station_ids).transpose().to_numpy(dtype=np.float64, copy=False)
+    station_matrix = (
+        pivoted.reindex(columns=available_station_ids)
+        .fillna(0.0)
+        .transpose()
+        .to_numpy(dtype=np.float64, copy=False)
+    )
     return station_meta, station_matrix
+
+
+def _resolve_repo_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
+def load_latest_ecmwf_asset_path(connection: sqlite3.Connection, *, reference_time: datetime) -> Path:
+    row = connection.execute(
+        """
+        SELECT relative_path
+        FROM asset
+        WHERE provider_code = 'ecmwf'
+          AND asset_kind = ?
+          AND valid_from IS NOT NULL
+          AND valid_to IS NOT NULL
+          AND valid_from <= ?
+          AND valid_to >= ?
+        ORDER BY valid_from DESC, created_at DESC
+        LIMIT 1
+        """,
+        (
+            ECMWF_ASSET_KIND,
+            reference_time.isoformat(timespec="seconds"),
+            reference_time.isoformat(timespec="seconds"),
+        ),
+    ).fetchone()
+    if row is None:
+        raise FileNotFoundError(
+            "No ECMWF forecast asset was found in history for the requested forecast window. "
+            "Run src/ingest/forecast_grid.py first."
+        )
+
+    asset_path = _resolve_repo_path(str(row["relative_path"]))
+    if not asset_path.exists():
+        raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
+    return asset_path
 
 
 def extend_station_matrix_with_forecast(
@@ -282,6 +327,27 @@ def extend_station_matrix_with_forecast(
     extended = np.array(station_matrix, dtype=np.float64, copy=True)
     extended[:, observed_nt:] = 0.0
     return extended
+
+
+def interpolate_source_matrix(
+    source_matrix: np.ndarray,
+    *,
+    nearest_idx: np.ndarray,
+    weights: np.ndarray,
+    chunk_hours: int,
+) -> np.ndarray:
+    if chunk_hours < 1:
+        raise ValueError("chunk_hours must be >= 1.")
+    total_hours = source_matrix.shape[1]
+    out = np.empty((nearest_idx.shape[0], total_hours), dtype=np.float64)
+    for start_idx in range(0, total_hours, chunk_hours):
+        end_idx = min(start_idx + chunk_hours, total_hours)
+        out[:, start_idx:end_idx] = interpolate_station_chunk(
+            source_matrix[:, start_idx:end_idx],
+            nearest_idx=nearest_idx,
+            weights=weights,
+        )
+    return out
 
 
 def build_idw_neighbors(
@@ -310,6 +376,32 @@ def build_idw_neighbors(
     return nearest_idx.astype(np.int32, copy=False), weights.astype(np.float64, copy=False)
 
 
+def build_grid_idw_neighbors(
+    mini_df: pd.DataFrame,
+    *,
+    latitudes: np.ndarray,
+    longitudes: np.ndarray,
+    nearest_points: int,
+    power: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    if latitudes.size < 1 or longitudes.size < 1:
+        raise ValueError("Forecast grid must contain at least one latitude and one longitude.")
+
+    lon_grid, lat_grid = np.meshgrid(longitudes, latitudes)
+    point_df = pd.DataFrame(
+        {
+            "lat": lat_grid.reshape(-1),
+            "lon": lon_grid.reshape(-1),
+        }
+    )
+    return build_idw_neighbors(
+        mini_df,
+        point_df,
+        nearest_stations=min(int(nearest_points), len(point_df)),
+        power=power,
+    )
+
+
 def interpolate_station_chunk(
     station_chunk: np.ndarray,
     *,
@@ -330,12 +422,10 @@ def interpolate_station_chunk(
     return np.divide(weighted_values.sum(axis=1), weight_sum)
 
 
-def write_chuvabin_atomic(
+def write_mini_rainfall_atomic(
     output_path: Path,
     *,
-    station_matrix: np.ndarray,
-    nearest_idx: np.ndarray,
-    weights: np.ndarray,
+    mini_matrix: np.ndarray,
     chunk_hours: int,
 ) -> None:
     if chunk_hours < 1:
@@ -345,19 +435,65 @@ def write_chuvabin_atomic(
     temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     try:
         with temp_path.open("wb") as handle:
-            total_hours = station_matrix.shape[1]
+            total_hours = mini_matrix.shape[1]
             for start_idx in range(0, total_hours, chunk_hours):
                 end_idx = min(start_idx + chunk_hours, total_hours)
-                interpolated = interpolate_station_chunk(
-                    station_matrix[:, start_idx:end_idx],
-                    nearest_idx=nearest_idx,
-                    weights=weights,
-                )
-                interpolated.astype(np.float32, copy=False).reshape(-1, order="F").tofile(handle)
+                mini_matrix[:, start_idx:end_idx].astype(np.float32, copy=False).reshape(-1, order="F").tofile(handle)
         temp_path.replace(output_path)
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
+
+
+def build_hourly_forecast_grid_series(
+    grib_path: Path,
+    *,
+    forecast_start_time: datetime,
+    forecast_nt: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    messages = read_tp_grib_messages(grib_path)
+    first_message = messages[0]
+    cycle_time = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
+    prev_valid_time = cycle_time
+    prev_cumulative = np.zeros_like(first_message.values_mm, dtype=np.float64)
+    latitudes = first_message.latitudes
+    longitudes = first_message.longitudes
+    hourly_lookup: dict[datetime, np.ndarray] = {}
+
+    for message in messages:
+        if message.values_mm.shape != prev_cumulative.shape:
+            raise ValueError("ECMWF GRIB contains inconsistent grid shapes across messages.")
+        if not np.allclose(message.latitudes, latitudes) or not np.allclose(message.longitudes, longitudes):
+            raise ValueError("ECMWF GRIB contains inconsistent grid coordinates across messages.")
+
+        delta_seconds = int((message.valid_time - prev_valid_time).total_seconds())
+        if delta_seconds < 0 or delta_seconds % 3600 != 0:
+            raise ValueError(
+                "ECMWF GRIB valid times are not monotonic hourly multiples; cannot harmonize to MGB hourly input."
+            )
+
+        delta_hours = delta_seconds // 3600
+        increment = message.values_mm - prev_cumulative
+        increment = np.where(np.isfinite(increment), increment, np.nan)
+        increment[increment < 0.0] = 0.0
+        if delta_hours > 0:
+            per_hour = increment / float(delta_hours)
+            for hour_offset in range(delta_hours):
+                hourly_lookup[prev_valid_time + timedelta(hours=hour_offset + 1)] = per_hour
+
+        prev_valid_time = message.valid_time
+        prev_cumulative = message.values_mm
+
+    required_times = [forecast_start_time + timedelta(hours=offset) for offset in range(forecast_nt)]
+    missing_times = [dt for dt in required_times if dt not in hourly_lookup]
+    if missing_times:
+        raise ValueError(
+            "ECMWF GRIB does not cover the full requested forecast window. "
+            f"First missing hour: {missing_times[0].isoformat(timespec='seconds')}"
+        )
+
+    hourly_grids = np.stack([hourly_lookup[dt] for dt in required_times], axis=0)
+    return latitudes, longitudes, hourly_grids
 
 
 def prepare_mgb_rainfall(
@@ -423,6 +559,10 @@ def prepare_mgb_rainfall(
         use_forecast_data,
     )
 
+    observed_hours = nt - window.forecast_nt
+    if observed_hours < 1:
+        raise ValueError(f"Invalid observed window length calculated from nt={nt} and forecast_nt={window.forecast_nt}.")
+
     with _connect_history_read_only(history_db) as connection:
         preferred_stations = load_preferred_rain_stations(connection)
         raw_values = load_rain_values(
@@ -431,27 +571,63 @@ def prepare_mgb_rainfall(
             query_start=query_start,
             query_end_exclusive=observed_end_exclusive,
         )
+        forecast_asset_path = (
+            load_latest_ecmwf_asset_path(connection, reference_time=window.forecast_start_time)
+            if use_forecast_data and window.forecast_nt > 0
+            else None
+        )
 
     hourly_values, used_hourly_normalization = temporarily_normalize_rain_to_hourly(raw_values)
-    time_index = pd.date_range(start=start_time, periods=nt, freq="h")
-    station_meta, station_matrix = build_hourly_station_matrix(preferred_stations, hourly_values, time_index=time_index)
-    station_matrix = extend_station_matrix_with_forecast(
-        station_matrix,
-        total_nt=nt,
-        forecast_nt=window.forecast_nt,
-        use_forecast_data=use_forecast_data,
+    observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq="h")
+    station_meta, station_matrix = build_hourly_station_matrix(
+        preferred_stations,
+        hourly_values,
+        time_index=observed_time_index,
     )
-    nearest_idx, weights = build_idw_neighbors(
+    observed_nearest_idx, observed_weights = build_idw_neighbors(
         mini_df,
         station_meta,
         nearest_stations=nearest_stations,
         power=power,
     )
-    write_chuvabin_atomic(
+    observed_mini_matrix = interpolate_source_matrix(
+        station_matrix,
+        nearest_idx=observed_nearest_idx,
+        weights=observed_weights,
+        chunk_hours=chunk_hours,
+    )
+
+    if use_forecast_data and window.forecast_nt > 0:
+        assert forecast_asset_path is not None
+        forecast_latitudes, forecast_longitudes, forecast_hourly_grids = build_hourly_forecast_grid_series(
+            forecast_asset_path,
+            forecast_start_time=window.forecast_start_time,
+            forecast_nt=window.forecast_nt,
+        )
+        forecast_grid_matrix = forecast_hourly_grids.reshape(window.forecast_nt, -1).transpose()
+        forecast_nearest_idx, forecast_weights = build_grid_idw_neighbors(
+            mini_df,
+            latitudes=forecast_latitudes,
+            longitudes=forecast_longitudes,
+            nearest_points=nearest_stations,
+            power=power,
+        )
+        forecast_mini_matrix = interpolate_source_matrix(
+            forecast_grid_matrix,
+            nearest_idx=forecast_nearest_idx,
+            weights=forecast_weights,
+            chunk_hours=chunk_hours,
+        )
+    else:
+        forecast_mini_matrix = np.zeros((nc, window.forecast_nt), dtype=np.float64)
+
+    mini_matrix = np.concatenate([observed_mini_matrix, forecast_mini_matrix], axis=1)
+    if mini_matrix.shape != (nc, nt):
+        raise ValueError(f"Final mini rainfall matrix shape mismatch: expected {(nc, nt)}, found {mini_matrix.shape}.")
+
+    write_mini_rainfall_atomic(
         output_path,
-        station_matrix=station_matrix,
-        nearest_idx=nearest_idx,
-        weights=weights,
+        mini_matrix=mini_matrix,
         chunk_hours=chunk_hours,
     )
 

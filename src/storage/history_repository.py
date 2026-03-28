@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 
@@ -26,6 +28,30 @@ class HistoryRepository:
         self.connection.close()
 
     def _validate_expected_schema(self) -> None:
+        asset_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(asset)").fetchall()
+        }
+        expected_asset_columns = {
+            "asset_id",
+            "asset_kind",
+            "format",
+            "relative_path",
+            "provider_code",
+            "checksum",
+            "valid_from",
+            "valid_to",
+            "metadata_json",
+            "created_at",
+        }
+        if asset_columns != expected_asset_columns:
+            raise RuntimeError(
+                "Banco historico incompatível com o schema atual de asset. "
+                f"Esperado {sorted(expected_asset_columns)}, encontrado {sorted(asset_columns)}. "
+                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
+                "para recriar o banco."
+            )
+
         observed_series_columns = {
             row["name"]
             for row in self.connection.execute("PRAGMA table_info(observed_series)").fetchall()
@@ -54,6 +80,19 @@ class HistoryRepository:
             raise RuntimeError(
                 "Banco historico incompatível com o catalogo atual de variaveis. "
                 f"Esperado pelo menos {sorted(expected_variables)}, encontrado {sorted(variable_codes)}. "
+                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
+                "para recriar o banco."
+            )
+
+        provider_codes = {
+            row["provider_code"]
+            for row in self.connection.execute("SELECT provider_code FROM provider").fetchall()
+        }
+        expected_providers = {"ana", "inmet", "ecmwf"}
+        if not expected_providers.issubset(provider_codes):
+            raise RuntimeError(
+                "Banco historico incompatível com o catalogo atual de providers. "
+                f"Esperado pelo menos {sorted(expected_providers)}, encontrado {sorted(provider_codes)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
             )
@@ -127,3 +166,115 @@ class HistoryRepository:
         )
         self.connection.commit()
         return len(rows)
+
+    def get_asset_by_relative_path(self, relative_path: str) -> dict | None:
+        row = self.connection.execute(
+            """
+            SELECT
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+                created_at
+            FROM asset
+            WHERE relative_path = ?
+            """,
+            (relative_path,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def upsert_asset(
+        self,
+        *,
+        asset_id: str,
+        asset_kind: str,
+        format: str,
+        relative_path: str,
+        provider_code: str | None,
+        checksum: str | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        metadata_json = json.dumps(metadata or {}, sort_keys=True, ensure_ascii=True)
+        self.connection.execute(
+            """
+            INSERT INTO asset (
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(relative_path) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                asset_kind = excluded.asset_kind,
+                format = excluded.format,
+                provider_code = excluded.provider_code,
+                checksum = excluded.checksum,
+                valid_from = excluded.valid_from,
+                valid_to = excluded.valid_to,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+            ),
+        )
+        self.connection.commit()
+        ensured_asset = self.get_asset_by_relative_path(relative_path)
+        if ensured_asset is None:
+            raise RuntimeError(f"Falha ao garantir asset relative_path={relative_path}.")
+        return ensured_asset
+
+    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict | None:
+        if isinstance(reference_time, datetime):
+            reference_text = reference_time.isoformat(timespec="seconds")
+        else:
+            reference_text = str(reference_time)
+        row = self.connection.execute(
+            """
+            SELECT
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+                created_at
+            FROM asset
+            WHERE provider_code = 'ecmwf'
+              AND asset_kind = ?
+              AND valid_from IS NOT NULL
+              AND valid_to IS NOT NULL
+              AND valid_from <= ?
+              AND valid_to >= ?
+            ORDER BY valid_from DESC, created_at DESC
+            LIMIT 1
+            """,
+            (asset_kind, reference_text, reference_text),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
