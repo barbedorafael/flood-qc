@@ -84,7 +84,7 @@ def build_dataset(
     q_values = np.arange(nc * total_nt, dtype=np.float32).reshape(nc, total_nt)
     y_values = (200000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(nc, y_total_nt)
 
-    write_output(output_dir / "QTUDO.MGB", q_values)
+    write_output(output_dir / "QTUDO_Inercial_Atual.MGB", q_values)
     write_output(output_dir / "YTUDO.MGB", y_values)
 
     return {

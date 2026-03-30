@@ -33,7 +33,7 @@ LOGGER_NAME = "floodqc.model.export_mgb_outputs"
 
 @dataclass(frozen=True, slots=True)
 class VariableSpec:
-    source_prefix: str
+    source_filename: str
     variable_code: str
     display_name: str
     unit: str
@@ -68,8 +68,8 @@ class ExportSummary:
 
 
 VARIABLE_SPECS = (
-    VariableSpec(source_prefix="QTUDO", variable_code="q", display_name="QTUDO", unit="m3/s"),
-    VariableSpec(source_prefix="YTUDO", variable_code="y", display_name="YTUDO", unit="m"),
+    VariableSpec(source_filename="QTUDO_Inercial_Atual.MGB", variable_code="q", display_name="QTUDO", unit="m3/s"),
+    VariableSpec(source_filename="YTUDO.MGB", variable_code="y", display_name="YTUDO", unit="m"),
 )
 
 
@@ -252,31 +252,35 @@ def infer_nt_from_binary(file_path: Path, *, nc: int) -> int:
         raise ValueError(f"Invalid NT inferred for {file_path.name}: NT={nt}")
     return int(nt)
 
+
 def discover_output_sources(output_dir: Path, *, nc: int) -> dict[str, OutputSource]:
     sources: dict[str, OutputSource] = {}
     logger = logging.getLogger(LOGGER_NAME)
 
     for spec in VARIABLE_SPECS:
-        matches = [
-            path
-            for path in output_dir.iterdir()
-            if path.is_file() and path.name.upper().startswith(spec.source_prefix)
-        ]
-        if not matches:
-            raise FileNotFoundError(f"No files found for {spec.source_prefix} in {output_dir}")
-        if len(matches) != 1:
-            names = sorted(path.name for path in matches)
+        source_path = output_dir / spec.source_filename
+        if not source_path.exists():
             raise FileNotFoundError(
-                f"Expected exactly one file for {spec.source_prefix} in {output_dir}. Found: {names}"
+                f"Required output file for variable_code={spec.variable_code!r} was not found: {source_path}"
+            )
+        if not source_path.is_file():
+            raise FileNotFoundError(
+                f"Required output path for variable_code={spec.variable_code!r} is not a file: {source_path}"
             )
 
         source = OutputSource(
             variable_code=spec.variable_code,
-            path=matches[0],
-            nt_total=infer_nt_from_binary(matches[0], nc=nc),
+            path=source_path,
+            nt_total=infer_nt_from_binary(source_path, nc=nc),
         )
         sources[spec.variable_code] = source
-        logger.info("source variable=%s path=%s nt_total=%s", spec.variable_code, source.path, source.nt_total)
+        logger.info(
+            "source variable=%s filename=%s path=%s nt_total=%s",
+            spec.variable_code,
+            spec.source_filename,
+            source.path,
+            source.nt_total,
+        )
 
     return sources
 
