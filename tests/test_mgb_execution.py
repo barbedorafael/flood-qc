@@ -194,10 +194,11 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
             asset_refs=["apps/mgb_runner/Output/QTUDO01.MGB"],
         )
 
+    monkeypatch.setattr(run_mgb, "build_run_id", lambda: "20260325T120000")
     monkeypatch.setattr(run_mgb, "prepare_mgb_execution", fake_prepare)
     monkeypatch.setattr(run_mgb, "execute_mgb_plan", fake_execute)
 
-    result = run_mgb.main(["--run-db", str(tmp_path / "data" / "runs" / "20260325T120000.sqlite")])
+    result = run_mgb.main([])
     captured = capsys.readouterr()
 
     assert result == 0

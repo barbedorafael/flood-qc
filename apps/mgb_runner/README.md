@@ -11,6 +11,7 @@ O codigo do runner fica em `src/model/`.
 Uso:
 
 ```bash
-python src/model/run_mgb.py --run-db data/runs/20260310T120000.sqlite --dry-run
-python src/model/run_mgb.py --run-db data/runs/20260310T120000.sqlite
+python src/model/run_mgb.py --dry-run
+python src/model/run_mgb.py
 ```
+

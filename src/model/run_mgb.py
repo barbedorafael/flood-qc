@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -16,20 +17,22 @@ from model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Runner windows-only do MGB.")
-    parser.add_argument("--run-db", required=True, type=Path, help="Arquivo SQLite do run.")
     parser.add_argument("--dry-run", action="store_true", help="Nao executa o binario real.")
     return parser
 
 
-def build_run_metadata(run_db: Path) -> RunMetadata:
-    run_id = run_db.stem
+def build_run_id() -> str:
+    return datetime.now().strftime("%Y%m%dT%H%M%S")
+
+
+def build_run_metadata() -> RunMetadata:
+    run_id = build_run_id()
     return RunMetadata(run_id=run_id, reference_time=run_id)
 
 
-def build_summary(run_db: Path, plan, result, *, dry_run: bool) -> dict[str, object]:
+def build_summary(plan, result, *, dry_run: bool) -> dict[str, object]:
     return {
         "status": "dry_run" if dry_run else str(plan.metadata.get("status", "success")),
-        "run_db": run_db.as_posix(),
         "command": plan.command,
         "working_directory": plan.working_directory,
         "workspace_root": plan.metadata["workspace_root"],
@@ -44,10 +47,10 @@ def build_summary(run_db: Path, plan, result, *, dry_run: bool) -> dict[str, obj
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    metadata = build_run_metadata(args.run_db)
+    metadata = build_run_metadata()
     plan = prepare_mgb_execution(metadata)
     result = execute_mgb_plan(plan, dry_run=args.dry_run)
-    print(json.dumps(build_summary(args.run_db, plan, result, dry_run=args.dry_run), indent=2))
+    print(json.dumps(build_summary(plan, result, dry_run=args.dry_run), indent=2))
     return 0
 
 
