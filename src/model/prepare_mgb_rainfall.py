@@ -5,7 +5,7 @@ import logging
 import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +18,8 @@ if str(SRC_DIR) not in sys.path:
 
 from common.paths import history_db_path, logs_dir as default_logs_dir
 from common.settings import load_settings
-from common.time_utils import resolve_reference_time
-from ingest.forecast_grid import ECMWF_ASSET_KIND, read_tp_grib_messages
+from common.time_utils import TIMEZONE, resolve_reference_time
+from ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
 from model.export_mgb_outputs import read_nc_from_parhig
 from model.prepare_mgb_meta import (
     DEFAULT_PARHIG,
@@ -453,14 +453,24 @@ def build_hourly_forecast_grid_series(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     messages = read_tp_grib_messages(grib_path)
     first_message = messages[0]
-    cycle_time = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
+    local_messages: list[TpGribMessage] = [
+        TpGribMessage(
+            valid_time=message.valid_time.replace(tzinfo=timezone.utc).astimezone(TIMEZONE).replace(tzinfo=None),
+            step_hours=message.step_hours,
+            latitudes=message.latitudes,
+            longitudes=message.longitudes,
+            values_mm=message.values_mm,
+        )
+        for message in messages
+    ]
+    cycle_time = min(message.valid_time - timedelta(hours=message.step_hours) for message in local_messages)
     prev_valid_time = cycle_time
     prev_cumulative = np.zeros_like(first_message.values_mm, dtype=np.float64)
     latitudes = first_message.latitudes
     longitudes = first_message.longitudes
     hourly_lookup: dict[datetime, np.ndarray] = {}
 
-    for message in messages:
+    for message in local_messages:
         if message.values_mm.shape != prev_cumulative.shape:
             raise ValueError("ECMWF GRIB contains inconsistent grid shapes across messages.")
         if not np.allclose(message.latitudes, latitudes) or not np.allclose(message.longitudes, longitudes):

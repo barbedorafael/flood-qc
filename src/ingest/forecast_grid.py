@@ -4,7 +4,7 @@ import argparse
 import logging
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -23,7 +23,7 @@ from common.paths import (
     relative_to_repo,
 )
 from common.settings import load_settings
-from common.time_utils import resolve_reference_time
+from common.time_utils import TIMEZONE, resolve_reference_time
 from storage.history_repository import HistoryRepository
 
 DEFAULT_HISTORY_DB = history_db_path()
@@ -123,8 +123,12 @@ def build_rs_bbox_with_buffer(*, buffer_fraction: float = BUFFER_FRACTION) -> tu
 
 
 def build_ecmwf_cycle(reference_time: datetime) -> datetime:
-    # Mantem o ciclo fixo 00 UTC, compatível com o material base já usado localmente.
-    return datetime(reference_time.year, reference_time.month, reference_time.day, 0, 0, 0)
+    # `reference_time` chega em horario local (America/Sao_Paulo) como limite das medicoes.
+    # O forecast do MGB comeca na hora seguinte, entao o ciclo ECMWF deve ser resolvido
+    # a partir desse inicio de forecast convertido para UTC.
+    forecast_start_local = reference_time + timedelta(hours=1)
+    forecast_start_utc = forecast_start_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
+    return datetime(forecast_start_utc.year, forecast_start_utc.month, forecast_start_utc.day, 0, 0, 0)
 
 
 def build_ecmwf_steps() -> list[int]:
@@ -152,29 +156,25 @@ def _build_grid_arrays(gid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if ni < 1 or nj < 1:
         raise ValueError(f"Invalid GRIB shape Ni={ni} Nj={nj}.")
 
-    lat_first = float(eccodes.codes_get(gid, "latitudeOfFirstGridPointInDegrees"))
-    lat_last = float(eccodes.codes_get(gid, "latitudeOfLastGridPointInDegrees"))
-    lon_first = float(eccodes.codes_get(gid, "longitudeOfFirstGridPointInDegrees"))
-    lon_last = float(eccodes.codes_get(gid, "longitudeOfLastGridPointInDegrees"))
-    lon_first = _normalize_longitudes(np.array([lon_first], dtype=np.float64))[0]
-    lon_last = _normalize_longitudes(np.array([lon_last], dtype=np.float64))[0]
-
-    if ni == 1:
-        lonitudes = np.array([lon_first], dtype=np.float64)
-    else:
-        lonitudes = np.linspace(lon_first, lon_last, num=ni, dtype=np.float64)
-    if nj == 1:
-        latitudes = np.array([lat_first], dtype=np.float64)
-    else:
-        latitudes = np.linspace(lat_first, lat_last, num=nj, dtype=np.float64)
-
     values = np.asarray(eccodes.codes_get_array(gid, "values"), dtype=np.float64).reshape(nj, ni)
+    latitude_grid = np.asarray(eccodes.codes_get_array(gid, "latitudes"), dtype=np.float64).reshape(nj, ni)
+    longitude_grid = _normalize_longitudes(
+        np.asarray(eccodes.codes_get_array(gid, "longitudes"), dtype=np.float64)
+    ).reshape(nj, ni)
 
-    lon_sort_idx = np.argsort(lonitudes)
-    lonitudes = lonitudes[lon_sort_idx]
+    latitudes = latitude_grid[:, 0].copy()
+    longitudes = longitude_grid[0, :].copy()
+
+    if not np.allclose(latitude_grid, latitudes[:, None]):
+        raise ValueError("Unexpected latitude layout in GRIB regular_ll grid.")
+    if not np.allclose(longitude_grid, longitudes[None, :]):
+        raise ValueError("Unexpected longitude layout in GRIB regular_ll grid.")
+
+    lon_sort_idx = np.argsort(longitudes)
+    longitudes = longitudes[lon_sort_idx]
     values = values[:, lon_sort_idx]
 
-    return latitudes, lonitudes, values
+    return latitudes, longitudes, values
 
 
 def _set_cropped_grid(gid, *, latitudes: np.ndarray, longitudes: np.ndarray, values: np.ndarray) -> None:

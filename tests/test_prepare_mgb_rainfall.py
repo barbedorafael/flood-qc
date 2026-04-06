@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from model.prepare_mgb_rainfall import extend_station_matrix_with_forecast, prepare_mgb_rainfall
+from ingest.forecast_grid import TpGribMessage
+from model.prepare_mgb_rainfall import (
+    build_hourly_forecast_grid_series,
+    extend_station_matrix_with_forecast,
+    prepare_mgb_rainfall,
+)
 
 
 PARHIG_TEMPLATE = """\
@@ -256,3 +262,36 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
     assert matrix[0, 72] == 10.0
     assert matrix[1, 72] == 20.0
     assert output_path.exists()
+
+
+def test_build_hourly_forecast_grid_series_converts_grib_valid_times_from_utc_to_brt(monkeypatch) -> None:
+    grid = np.array([[3.0]], dtype=np.float64)
+    messages = [
+        TpGribMessage(
+            valid_time=datetime(2026, 3, 18, 0, 0, 0),
+            step_hours=0,
+            latitudes=np.array([-29.5], dtype=np.float64),
+            longitudes=np.array([-51.5], dtype=np.float64),
+            values_mm=np.array([[0.0]], dtype=np.float64),
+        ),
+        TpGribMessage(
+            valid_time=datetime(2026, 3, 18, 3, 0, 0),
+            step_hours=3,
+            latitudes=np.array([-29.5], dtype=np.float64),
+            longitudes=np.array([-51.5], dtype=np.float64),
+            values_mm=grid,
+        ),
+    ]
+
+    monkeypatch.setattr("model.prepare_mgb_rainfall.read_tp_grib_messages", lambda _: messages)
+
+    latitudes, longitudes, hourly_grids = build_hourly_forecast_grid_series(
+        Path("unused.grib2"),
+        forecast_start_time=datetime(2026, 3, 18, 0, 0, 0),
+        forecast_nt=1,
+    )
+
+    assert latitudes.tolist() == [-29.5]
+    assert longitudes.tolist() == [-51.5]
+    assert hourly_grids.shape == (1, 1, 1)
+    assert hourly_grids[0, 0, 0] == pytest.approx(1.0)
