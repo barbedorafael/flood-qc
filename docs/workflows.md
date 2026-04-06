@@ -19,8 +19,7 @@
 1. Preparar os arquivos de input necessarios para o MGB a partir dos insumos aprovados.
 2. Copiar `apps/mgb_runner/Input` para `C:/mgb-hora/Input`, recriar `C:/mgb-hora/Output` e executar o `.exe` local sem parametros.
 3. Espelhar `C:/mgb-hora/Output` de volta para `apps/mgb_runner/Output`.
-4. Exportar a malha completa do modelo para o artefato externo `data/interim/model_outputs.sqlite`.
-5. Usar esse artefato completo como base para visualizacao, triagem e selecao do subset operacional.
+4. Usar diretamente os binarios `QTUDO_Inercial_Atual.MGB` e `YTUDO.MGB`, junto de `PARHIG.hig` e `MINI.gtp`, como base para visualizacao, triagem e selecao do subset operacional.
 
 ## QC de outputs
 
@@ -39,7 +38,7 @@
 
 ## Revisao manual
 
-1. Operador inspeciona flags, series e o subset do run apoiado pelo dashboard e pelo artefato completo externo.
+1. Operador inspeciona flags, series e o subset do run apoiado pelo dashboard e pelos binarios completos do MGB.
 2. Ajustes sao registrados como `manual_edit` em um run derivado quando houver intervencao manual.
 3. Nenhum run automatico e editado em lugar.
 

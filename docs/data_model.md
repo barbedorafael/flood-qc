@@ -56,13 +56,16 @@ Guarda o contexto fechado de uma execucao especifica:
 
 ### Artefato completo de outputs
 
-O output completo exportado do MGB fica fora do run, em `data/interim/model_outputs.sqlite`.
+O output completo do MGB fica fora do run nos binarios canonicos do proprio runner:
 
-Esse artefato intermediario existe para:
+- `apps/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
+- `apps/mgb_runner/Output/YTUDO.MGB`
 
-- visualizacao ampla no dashboard;
-- triagem e exploracao da malha completa;
-- selecao do subset operacional que sera materializado no run.
+O dashboard le esses binarios diretamente, usando:
+
+- `apps/mgb_runner/Input/PARHIG.hig` para `start_time`, `dt_seconds` e `NC`;
+- `apps/mgb_runner/Input/MINI.gtp` para mapear `mini_id` para a ordem das linhas;
+- `run.reference_time` para separar trecho atual e previsao.
 
 ## Convencoes de representacao
 
@@ -108,17 +111,17 @@ O banco do run guarda apenas a referencia desse setup em `model_execution.setup_
 
 ### Outputs do MGB
 
-No contrato atual, o output completo do MGB e exportado primeiro para `data/interim/model_outputs.sqlite`.
+No contrato atual, o output completo do MGB permanece nos binarios do runner e o dashboard acessa esse material diretamente.
 
 O run guarda apenas o subset operacional desses outputs:
 
 - `mgb_output_series`: uma serie por `variable_code + cell_id + prev_flag`;
 - `mgb_output_value`: um valor por `series_id + dt`.
-- para o artefato intermediario `model_outputs.sqlite`, `variable_code` canonico usa `q` para `QTUDO*` e `y` para `YTUDO*`;
+- para o consumo do dashboard, `variable_code` canonico usa `q` para `QTUDO*` e `y` para `YTUDO*`;
 - `display_name` preserva o nome original do produto MGB (`QTUDO` e `YTUDO`);
 - `series_id` e deterministico no formato `<mini_id com zero a esquerda para 4 digitos>.<variable_code>.<sim|for>`, por exemplo `0539.q.sim`.
 
-Isso deixa o run mais aderente ao uso operacional e preserva a malha completa em um artefato intermediario proprio.
+Isso deixa o run mais aderente ao uso operacional sem exigir um artefato tabular gigante para visualizacao.
 
 ## Schemas implementados
 

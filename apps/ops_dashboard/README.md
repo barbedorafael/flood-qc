@@ -11,7 +11,8 @@ streamlit run apps/ops_dashboard/app.py
 O dashboard consome:
 
 - `data/history.sqlite` para cadastro de estacoes e series observadas;
-- `data/interim/model_outputs.sqlite` para series MGB;
+- `apps/mgb_runner/Output/QTUDO_Inercial_Atual.MGB` e `apps/mgb_runner/Output/YTUDO.MGB` para series MGB;
+- `apps/mgb_runner/Input/PARHIG.hig` e `apps/mgb_runner/Input/MINI.gtp` para metadados e mapeamento das minis;
 - `data/interim/accum_*h.tif` para rasters de chuva acumulada;
 - `data/legacy/app_layers/rios_mini.geojson` para clique nas minis MGB.
 

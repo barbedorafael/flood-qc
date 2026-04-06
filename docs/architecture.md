@@ -36,7 +36,7 @@ O cadastro espacial completo do MGB fica em um GPKG externo em `data/spatial/`. 
 
 ### Artefato completo de outputs fora do run
 
-O output completo do MGB nao precisa morar dentro do banco do run. O contrato operacional passa a considerar `data/interim/model_outputs.sqlite` como artefato intermediario de outputs completos para visualizacao, triagem e consultas amplas. O run materializa apenas o subset operacional efetivamente usado no ciclo do dia ou em uma derivacao manual.
+O output completo do MGB nao precisa morar dentro do banco do run. O contrato operacional passa a considerar os binarios canonicos do runner (`QTUDO_Inercial_Atual.MGB` e `YTUDO.MGB`) como artefatos completos de output para visualizacao e triagem. O run materializa apenas o subset operacional efetivamente usado no ciclo do dia ou em uma derivacao manual.
 
 ### Streamlit como UI principal
 
@@ -54,7 +54,7 @@ O MGB e Windows-only e tem acoplamentos especificos de executavel, diretoria de 
 
 - simplificar infraestrutura agora em vez de maximizar flexibilidade prematura.
 - arquivos SQLite e artefatos locais em vez de servicos centralizados.
-- artefato completo do MGB fora do run e subset operacional dentro do run para manter o fluxo mais enxuto e aderente ao uso real.
+- artefato completo do MGB em binarios fora do run e subset operacional dentro do run para manter o fluxo mais enxuto e aderente ao uso real.
 - geometria e setup espacial do MGB fora dos bancos para evitar duplicacao e acoplamento espacial desnecessario.
 
 ## Fluxo entre historico, runs e outputs
@@ -62,7 +62,7 @@ O MGB e Windows-only e tem acoplamentos especificos de executavel, diretoria de 
 1. A ingestao coleta dados externos e grava artefatos brutos em `data/interim/`.
 2. O QC automatico registra flags e promove os dados usados como insumo do modelo.
 3. O runner do MGB executa a simulacao com os arquivos de input preparados para o ciclo operacional.
-4. O output completo do modelo e exportado para `data/interim/model_outputs.sqlite`.
+4. O output completo do modelo permanece nos binarios do runner e e lido diretamente pelo dashboard.
 5. Um run automatico e materializado em `data/runs/<run_id>.sqlite`, copiando os inputs usados, referenciando os assets relevantes e registrando apenas o subset operacional dos outputs.
 6. Quando houver intervencao humana, um run manual derivado e criado com `parent_run_id` apontando para o automatico.
 7. O historico recebe o catalogo do run e, quando apropriado, metadados de publicacao.

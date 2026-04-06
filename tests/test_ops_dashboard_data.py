@@ -4,7 +4,9 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
 
 from reporting import ops_dashboard_data
 from storage.db_bootstrap import apply_schema
@@ -23,6 +25,93 @@ def initialize_history_db(path: Path) -> Path:
 def initialize_model_outputs_db(path: Path) -> Path:
     apply_schema(path, MODEL_OUTPUTS_SCHEMA_PATH)
     return path
+
+
+def write_parhig(path: Path, *, start_time: datetime, nc: int, dt_seconds: int = 3600) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "ARQUIVO DE INFORMACOES GERAIS PARA O MODELO DE GRANDES BACIAS",
+                "!",
+                "       DIA       MES       ANO      HORA          !INICIO DA SIMULACAO",
+                f"        {start_time.day:02d}       {start_time.month:02d}       {start_time.year:04d}        {start_time.hour:02d}",
+                "",
+                "        NT        DT       !NUMERO DE INTERVALOS DE TEMPO E TAMANHO DO INTERVALO EM SEGUNDOS",
+                f"         1     {dt_seconds}.",
+                "",
+                "        NC        NU        NB      NCLI     !NUMERO DE CELULAS, USOS, BACIAS E POSTOS CLIMA",
+                f"         {nc}         1         1         1",
+            ]
+        )
+        + "\n",
+        encoding="latin-1",
+    )
+
+
+def write_mini(path: Path, mini_ids: list[int]) -> None:
+    lines = ["CatID Mini"]
+    for index, mini_id in enumerate(mini_ids, start=1):
+        lines.append(f"{index} {mini_id}")
+    path.write_text("\n".join(lines) + "\n", encoding="latin-1")
+
+
+def write_output(path: Path, values: np.ndarray) -> None:
+    np.asarray(values, dtype=np.float32).tofile(path)
+
+
+def build_mgb_dataset(tmp_path: Path, *, nt_total: int = 72) -> dict[str, object]:
+    input_dir = tmp_path / "apps" / "mgb_runner" / "Input"
+    output_dir = tmp_path / "apps" / "mgb_runner" / "Output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    start_time = datetime(2026, 2, 1, 0, 0, 0)
+    mini_ids = [101, 539]
+    nc = len(mini_ids)
+
+    write_parhig(input_dir / "PARHIG.hig", start_time=start_time, nc=nc)
+    write_mini(input_dir / "MINI.gtp", mini_ids)
+
+    q_values = np.vstack(
+        [
+            np.arange(nt_total, dtype=np.float32),
+            1000.0 + np.arange(nt_total, dtype=np.float32),
+        ]
+    )
+    y_values = np.vstack(
+        [
+            2000.0 + np.arange(nt_total, dtype=np.float32),
+            3000.0 + np.arange(nt_total, dtype=np.float32),
+        ]
+    )
+    write_output(output_dir / "QTUDO_Inercial_Atual.MGB", q_values)
+    write_output(output_dir / "YTUDO.MGB", y_values)
+
+    return {
+        "input_dir": input_dir,
+        "output_dir": output_dir,
+        "parhig_path": input_dir / "PARHIG.hig",
+        "mini_gtp_path": input_dir / "MINI.gtp",
+        "start_time": start_time,
+        "mini_ids": mini_ids,
+        "nc": nc,
+        "nt_total": nt_total,
+    }
+
+
+def patch_mgb_runtime(monkeypatch, dataset: dict[str, object], *, reference_time: str) -> None:
+    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_INPUT_DIR", Path(dataset["input_dir"]))
+    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_OUTPUT_DIR", Path(dataset["output_dir"]))
+    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_PARHIG_PATH", Path(dataset["parhig_path"]))
+    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_MINI_GTP_PATH", Path(dataset["mini_gtp_path"]))
+    monkeypatch.setattr(
+        ops_dashboard_data,
+        "load_settings",
+        lambda: {
+            "run": {"reference_time": reference_time},
+            "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
+        },
+    )
 
 
 def insert_station(connection: sqlite3.Connection, *, station_uid: int, station_code: str, station_name: str) -> None:
@@ -157,47 +246,90 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
     ]
 
 
-def test_load_mgb_series_splits_current_and_forecast(tmp_path) -> None:
-    db_path = initialize_model_outputs_db(tmp_path / "model_outputs.sqlite")
+def test_load_mgb_series_splits_current_and_forecast(tmp_path, monkeypatch) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=72)
+    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-02T23:00:00")
 
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO metadata (
-                reference_time,
-                reference_date,
-                window_start,
-                window_end_exclusive,
-                dt_seconds,
-                nc,
-                nt_current,
-                nt_forecast
-            ) VALUES ('2026-02-15T00:00:00', '2026-02-15', '2026-01-16T00:00:00', '2026-03-02T00:00:00', 3600, 1, 2, 2)
-            """
-        )
-        connection.execute("INSERT INTO variable (variable_code, display_name, unit) VALUES ('q', 'QTUDO', 'm3/s')")
-        connection.execute(
-            "INSERT INTO output_series (series_id, variable_code, mini_id, prev_flag, unit) VALUES ('0539.q.sim', 'q', 539, 0, 'm3/s')"
-        )
-        connection.execute(
-            "INSERT INTO output_series (series_id, variable_code, mini_id, prev_flag, unit) VALUES ('0539.q.for', 'q', 539, 1, 'm3/s')"
-        )
-        connection.executemany(
-            "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
-            [
-                ("0539.q.sim", "2026-01-01T00:00:00", 1.0),
-                ("0539.q.sim", "2026-02-15T00:00:00", 2.0),
-                ("0539.q.for", "2026-02-15T01:00:00", 3.0),
-                ("0539.q.for", "2026-02-15T02:00:00", 4.0),
-            ],
-        )
-        connection.commit()
+    series = ops_dashboard_data.load_mgb_series(539, "q", days_window=1)
 
-    series = ops_dashboard_data.load_mgb_series(539, "q", db_path, days_window=10)
+    assert series["prev_flag"].tolist() == ([0] * 25) + ([1] * 24)
+    assert series["value"].tolist()[0] == 1023.0
+    assert series["value"].tolist()[-1] == 1071.0
+    assert series["display_name"].tolist()[0] == "QTUDO"
+    assert series["unit"].tolist()[0] == "m3/s"
+    assert series["dt"].iloc[0] == pd.Timestamp("2026-02-01 23:00:00")
+    assert series["dt"].iloc[24] == pd.Timestamp("2026-02-02 23:00:00")
+    assert series["dt"].iloc[25] == pd.Timestamp("2026-02-03 00:00:00")
 
-    assert series["prev_flag"].tolist() == [0, 1, 1]
-    assert series["value"].tolist() == [2.0, 3.0, 4.0]
-    assert series["display_name"].tolist() == ["QTUDO", "QTUDO", "QTUDO"]
+
+def test_list_model_variables_returns_static_mgb_catalog() -> None:
+    variables = ops_dashboard_data.list_model_variables()
+
+    assert variables.to_dict(orient="records") == [
+        {"variable_code": "q", "display_name": "QTUDO", "unit": "m3/s"},
+        {"variable_code": "y", "display_name": "YTUDO", "unit": "m"},
+    ]
+
+
+def test_load_model_metadata_is_derived_from_parhig_binaries_and_config(tmp_path, monkeypatch) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=72)
+    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-02T23:00:00")
+
+    metadata = ops_dashboard_data.load_model_metadata()
+
+    assert metadata["reference_time"] == pd.Timestamp("2026-02-02 23:00:00")
+    assert metadata["reference_date"] == pd.Timestamp("2026-02-02")
+    assert metadata["window_start"] == pd.Timestamp("2026-01-03 00:00:00")
+    assert metadata["window_end_exclusive"] == pd.Timestamp("2026-02-18 00:00:00")
+    assert metadata["dt_seconds"] == 3600
+    assert metadata["nc"] == 2
+    assert metadata["nt_current"] == 48
+    assert metadata["nt_forecast"] == 24
+
+
+def test_build_mgb_mini_index_preserves_mini_row_order(tmp_path) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=8)
+
+    index = ops_dashboard_data._build_mgb_mini_index(
+        mini_gtp_path=Path(dataset["mini_gtp_path"]),
+        nc=int(dataset["nc"]),
+    )
+
+    assert index == {101: 0, 539: 1}
+
+
+def test_load_mgb_series_rejects_unknown_mini_id(tmp_path, monkeypatch) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=24)
+    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-01T23:00:00")
+
+    with pytest.raises(ValueError, match="Mini 999 was not found"):
+        ops_dashboard_data.load_mgb_series(999, "q", days_window=1)
+
+
+def test_load_model_metadata_rejects_inconsistent_nt_between_variables(tmp_path, monkeypatch) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=24)
+    write_output(Path(dataset["output_dir"]) / "YTUDO.MGB", np.arange(2 * 12, dtype=np.float32).reshape(2, 12))
+    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-01T23:00:00")
+
+    with pytest.raises(ValueError, match="Inconsistent NT across MGB binary outputs"):
+        ops_dashboard_data.load_model_metadata()
+
+
+def test_load_mgb_series_rejects_binary_incompatible_with_nc(tmp_path, monkeypatch) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=24)
+    write_output(Path(dataset["output_dir"]) / "QTUDO_Inercial_Atual.MGB", np.arange(25, dtype=np.float32))
+    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-01T23:00:00")
+
+    with pytest.raises(ValueError, match="not divisible by NC=2"):
+        ops_dashboard_data.load_mgb_series(101, "q", days_window=1)
+
+
+def test_load_mgb_series_rejects_reference_time_after_available_range(tmp_path, monkeypatch) -> None:
+    dataset = build_mgb_dataset(tmp_path, nt_total=24)
+    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-03T00:00:00")
+
+    with pytest.raises(ValueError, match="exceeds the available output end"):
+        ops_dashboard_data.load_mgb_series(101, "q", days_window=1)
 
 
 def test_list_accumulation_rasters_catalogs_expected_horizons(tmp_path) -> None:

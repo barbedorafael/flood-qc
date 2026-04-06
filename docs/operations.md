@@ -32,7 +32,8 @@ Os paths canonicos e a URL base da ANA ficam fixos em codigo.
 
 ## Artefato completo vs run
 
-- `data/interim/model_outputs.sqlite`: artefato completo dos outputs do modelo para visualizacao e triagem.
+- `apps/mgb_runner/Output/QTUDO_Inercial_Atual.MGB` e `apps/mgb_runner/Output/YTUDO.MGB`: artefatos completos dos outputs do modelo usados pelo dashboard.
+- `apps/mgb_runner/Input/PARHIG.hig` e `apps/mgb_runner/Input/MINI.gtp`: metadados e mapeamento para leitura direta desses binarios.
 - `data/runs/<run_id>.sqlite`: contexto operacional do run, com subset dos outputs realmente carregados para analise, rastreio e revisao.
 
 ## Como armazenar paths de raster

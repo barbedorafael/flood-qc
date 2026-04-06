@@ -11,11 +11,38 @@ import numpy as np
 import pandas as pd
 
 from common.paths import history_db_path, interim_dir
+from common.settings import load_settings
+from common.time_utils import resolve_reference_time
+from model.export_mgb_outputs import (
+    build_export_window,
+    compute_nt_current,
+    infer_nt_from_binary,
+    read_mini_ids,
+    read_nc_from_parhig,
+    read_time_settings_from_parhig,
+)
 
 
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 ACCUM_RASTER_PATTERN = re.compile(r"^accum_(\d+)h\.tif$", re.IGNORECASE)
 LEGACY_RIVERS_GEOJSON_PATH = Path("data/legacy/app_layers/rios_mini.geojson")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MGB_INPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Input"
+DEFAULT_MGB_OUTPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Output"
+DEFAULT_MGB_PARHIG_PATH = DEFAULT_MGB_INPUT_DIR / "PARHIG.hig"
+DEFAULT_MGB_MINI_GTP_PATH = DEFAULT_MGB_INPUT_DIR / "MINI.gtp"
+MGB_VARIABLE_METADATA = {
+    "q": {
+        "display_name": "QTUDO",
+        "unit": "m3/s",
+        "source_filename": "QTUDO_Inercial_Atual.MGB",
+    },
+    "y": {
+        "display_name": "YTUDO",
+        "unit": "m",
+        "source_filename": "YTUDO.MGB",
+    },
+}
 
 
 def _ensure_datetime_series(series: pd.Series) -> pd.Series:
@@ -325,51 +352,102 @@ def compute_observed_metrics(observed_df: pd.DataFrame) -> dict[str, object]:
     }
 
 
+def _canonical_variable_code(variable_code: str) -> str:
+    return str(variable_code).strip().lower()
+
+
+def _resolve_mgb_output_path(variable_code: str) -> Path:
+    canonical = _canonical_variable_code(variable_code)
+    metadata = MGB_VARIABLE_METADATA.get(canonical)
+    if metadata is None:
+        raise ValueError(f"Unsupported MGB variable_code={variable_code!r}. Expected one of {sorted(MGB_VARIABLE_METADATA)}.")
+    return DEFAULT_MGB_OUTPUT_DIR / str(metadata["source_filename"])
+
+
+def _build_mgb_mini_index(*, mini_gtp_path: Path, nc: int) -> dict[int, int]:
+    mini_ids = read_mini_ids(mini_gtp_path, nc=nc)
+    return {int(mini_id): row_index for row_index, mini_id in enumerate(mini_ids)}
+
+
+def _require_mgb_paths(variable_code: str) -> tuple[Path, Path, Path]:
+    parhig_path = DEFAULT_MGB_PARHIG_PATH
+    mini_gtp_path = DEFAULT_MGB_MINI_GTP_PATH
+    output_path = _resolve_mgb_output_path(variable_code)
+    missing = [path for path in (parhig_path, mini_gtp_path, output_path) if not path.exists()]
+    if missing:
+        missing_text = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(f"Required MGB dashboard inputs were not found: {missing_text}")
+    return parhig_path, mini_gtp_path, output_path
+
+
+def _load_mgb_runtime_settings() -> tuple[datetime, int, int]:
+    settings = load_settings()
+    reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    mgb_settings = settings["mgb"]
+    output_days_before = int(mgb_settings["output_days_before"])
+    forecast_horizon_days = int(mgb_settings["forecast_horizon_days"])
+    return reference_time, output_days_before, forecast_horizon_days
+
+
 def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
-    """Carrega metadados do artefato completo de outputs exportado para visualizacao."""
-    model_db_path = database_path or interim_dir() / "model_outputs.sqlite"
-    with _connect(model_db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT
-                reference_time,
-                reference_date,
-                window_start,
-                window_end_exclusive,
-                dt_seconds,
-                nc,
-                nt_current,
-                nt_forecast
-            FROM metadata
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    if row is None:
+    """Carrega metadados dos outputs MGB diretamente dos binarios canonicos."""
+    del database_path
+    available_paths = [DEFAULT_MGB_OUTPUT_DIR / str(meta["source_filename"]) for meta in MGB_VARIABLE_METADATA.values()]
+    if not DEFAULT_MGB_PARHIG_PATH.exists() or not DEFAULT_MGB_MINI_GTP_PATH.exists() or not any(
+        path.exists() for path in available_paths
+    ):
         return {}
-    metadata = dict(row)
-    for key in ("reference_time", "window_start", "window_end_exclusive"):
-        metadata[key] = pd.to_datetime(metadata[key], errors="coerce")
-    metadata["reference_date"] = pd.to_datetime(metadata["reference_date"], errors="coerce")
-    return metadata
+
+    nc = read_nc_from_parhig(DEFAULT_MGB_PARHIG_PATH)
+    start_time, dt_seconds = read_time_settings_from_parhig(DEFAULT_MGB_PARHIG_PATH)
+    nt_values = {
+        variable_code: infer_nt_from_binary(path, nc=nc)
+        for variable_code, meta in MGB_VARIABLE_METADATA.items()
+        for path in [DEFAULT_MGB_OUTPUT_DIR / str(meta["source_filename"])]
+        if path.exists()
+    }
+    nt_set = set(nt_values.values())
+    if len(nt_set) != 1:
+        raise ValueError(f"Inconsistent NT across MGB binary outputs: {nt_values}")
+
+    nt_total = nt_set.pop()
+    reference_time, output_days_before, forecast_horizon_days = _load_mgb_runtime_settings()
+    nt_current, nt_forecast = compute_nt_current(
+        start_time=start_time,
+        dt_seconds=dt_seconds,
+        reference_time=reference_time,
+        nt_total=nt_total,
+    )
+    export_window = build_export_window(
+        reference_time,
+        output_days_before=output_days_before,
+        forecast_horizon_days=forecast_horizon_days,
+    )
+    return {
+        "reference_time": pd.Timestamp(reference_time),
+        "reference_date": pd.Timestamp(export_window.reference_date),
+        "window_start": pd.Timestamp(export_window.window_start),
+        "window_end_exclusive": pd.Timestamp(export_window.window_end_exclusive),
+        "dt_seconds": dt_seconds,
+        "nc": nc,
+        "nt_current": nt_current,
+        "nt_forecast": nt_forecast,
+    }
 
 
 def list_model_variables(database_path: Path | None = None) -> pd.DataFrame:
-    """Lista variaveis disponiveis no artefato completo de outputs do modelo."""
-    model_db_path = database_path or interim_dir() / "model_outputs.sqlite"
-    with _connect(model_db_path) as connection:
-        variables = pd.read_sql_query(
-            """
-            SELECT
-                variable_code,
-                display_name,
-                unit
-            FROM variable
-            ORDER BY variable_code
-            """,
-            connection,
-        )
-    return variables
+    """Lista as variaveis MGB suportadas pelo dashboard."""
+    del database_path
+    return pd.DataFrame(
+        [
+            {
+                "variable_code": variable_code,
+                "display_name": str(metadata["display_name"]),
+                "unit": str(metadata["unit"]),
+            }
+            for variable_code, metadata in sorted(MGB_VARIABLE_METADATA.items())
+        ]
+    )
 
 
 def load_mgb_series(
@@ -379,35 +457,54 @@ def load_mgb_series(
     *,
     days_window: int = 30,
 ) -> pd.DataFrame:
-    """Le uma serie da malha completa exportada em model_outputs.sqlite."""
-    model_db_path = database_path or interim_dir() / "model_outputs.sqlite"
-    with _connect(model_db_path) as connection:
-        df = pd.read_sql_query(
-            """
-            SELECT
-                ov.dt,
-                os.prev_flag,
-                ov.value,
-                os.variable_code,
-                v.display_name,
-                os.unit
-            FROM output_series os
-            JOIN output_value ov ON ov.series_id = os.series_id
-            JOIN variable v ON v.variable_code = os.variable_code
-            WHERE os.mini_id = ?
-              AND os.variable_code = ?
-            ORDER BY ov.dt
-            """,
-            connection,
-            params=(int(mini_id), str(variable_code)),
-        )
-
-    if df.empty:
+    """Le uma serie MGB diretamente dos binarios canonicos do runner."""
+    del database_path
+    canonical = _canonical_variable_code(variable_code)
+    metadata = MGB_VARIABLE_METADATA.get(canonical)
+    if metadata is None:
         return pd.DataFrame(columns=["dt", "prev_flag", "value", "variable_code", "display_name", "unit"])
 
-    df["dt"] = _ensure_datetime_series(df["dt"])
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    df["prev_flag"] = pd.to_numeric(df["prev_flag"], errors="coerce").fillna(0).astype(int)
+    parhig_path, mini_gtp_path, output_path = _require_mgb_paths(canonical)
+    nc = read_nc_from_parhig(parhig_path)
+    start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
+    row_lookup = _build_mgb_mini_index(mini_gtp_path=mini_gtp_path, nc=nc)
+    row_index = row_lookup.get(int(mini_id))
+    if row_index is None:
+        raise ValueError(f"Mini {mini_id} was not found in {mini_gtp_path}.")
+
+    nt_total = infer_nt_from_binary(output_path, nc=nc)
+    reference_time, _, _ = _load_mgb_runtime_settings()
+    nt_current, nt_forecast = compute_nt_current(
+        start_time=start_time,
+        dt_seconds=dt_seconds,
+        reference_time=reference_time,
+        nt_total=nt_total,
+    )
+
+    matrix = np.memmap(output_path, dtype=np.float32, mode="r", shape=(nc, nt_total))
+    try:
+        values = np.asarray(matrix[row_index, :], dtype=np.float32)
+    finally:
+        del matrix
+
+    dt_index = pd.date_range(start=start_time, periods=nt_total, freq=pd.to_timedelta(dt_seconds, unit="s"))
+    prev_flags = np.concatenate(
+        [
+            np.zeros(nt_current, dtype=np.int8),
+            np.ones(nt_forecast, dtype=np.int8),
+        ]
+    )
+    df = pd.DataFrame(
+        {
+            "dt": dt_index,
+            "prev_flag": prev_flags,
+            "value": values,
+            "variable_code": canonical,
+            "display_name": str(metadata["display_name"]),
+            "unit": str(metadata["unit"]),
+        }
+    )
+
     current_df = df[df["prev_flag"] == 0].copy()
     forecast_df = df[df["prev_flag"] == 1].copy()
 
@@ -481,4 +578,3 @@ def load_rivers_layer_geojson(path: Path | None = None) -> dict | None:
         props["mini_id"] = mini_id
         props["click_id"] = f"MINI|{mini_id}"
     return payload
-
