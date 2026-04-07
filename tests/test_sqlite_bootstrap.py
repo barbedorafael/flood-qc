@@ -33,6 +33,7 @@ def test_initialize_history_db(tmp_path) -> None:
         "asset",
         "observed_series",
         "observed_value",
+        "manual_edit",
         "run_catalog",
     }.issubset(tables)
     assert "ingest_batch" not in tables
@@ -71,6 +72,23 @@ def test_initialize_history_db(tmp_path) -> None:
     assert "unit" not in observed_series_columns
     assert "source_asset_id" not in observed_series_columns
     assert "ingest_batch_id" not in observed_series_columns
+
+    manual_edit_columns = _list_columns(db_path, "manual_edit")
+    assert {
+        "manual_edit_id",
+        "asset_id",
+        "edit_kind",
+        "t0_step",
+        "t1_step",
+        "shift_lat",
+        "shift_lon",
+        "rotation_deg",
+        "multiplication_factor",
+        "editor",
+        "reason",
+        "metadata_json",
+        "created_at",
+    }.issubset(manual_edit_columns)
 
 
 def test_history_station_inventory_csv_loads(tmp_path) -> None:

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+
+FORECAST_EDIT_KIND = "ecmwf_forecast_correction"
 
 
 def build_observed_series_id(station_uid: int, variable_code: str, state: str = "raw") -> str:
@@ -27,49 +32,63 @@ class HistoryRepository:
     def close(self) -> None:
         self.connection.close()
 
-    def _validate_expected_schema(self) -> None:
-        asset_columns = {
+    def _require_exact_columns(self, table_name: str, expected_columns: set[str]) -> None:
+        found_columns = {
             row["name"]
-            for row in self.connection.execute("PRAGMA table_info(asset)").fetchall()
+            for row in self.connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
-        expected_asset_columns = {
-            "asset_id",
-            "asset_kind",
-            "format",
-            "relative_path",
-            "provider_code",
-            "checksum",
-            "valid_from",
-            "valid_to",
-            "metadata_json",
-            "created_at",
-        }
-        if asset_columns != expected_asset_columns:
+        if found_columns != expected_columns:
             raise RuntimeError(
-                "Banco historico incompatível com o schema atual de asset. "
-                f"Esperado {sorted(expected_asset_columns)}, encontrado {sorted(asset_columns)}. "
+                f"Banco historico incompativel com o schema atual de {table_name}. "
+                f"Esperado {sorted(expected_columns)}, encontrado {sorted(found_columns)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
             )
 
-        observed_series_columns = {
-            row["name"]
-            for row in self.connection.execute("PRAGMA table_info(observed_series)").fetchall()
-        }
-        expected_observed_series_columns = {
-            "series_id",
-            "station_uid",
-            "variable_code",
-            "state",
-            "created_at",
-        }
-        if observed_series_columns != expected_observed_series_columns:
-            raise RuntimeError(
-                "Banco historico incompatível com o schema atual de observed_series. "
-                f"Esperado {sorted(expected_observed_series_columns)}, encontrado {sorted(observed_series_columns)}. "
-                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
-                "para recriar o banco."
-            )
+    def _validate_expected_schema(self) -> None:
+        self._require_exact_columns(
+            "asset",
+            {
+                "asset_id",
+                "asset_kind",
+                "format",
+                "relative_path",
+                "provider_code",
+                "checksum",
+                "valid_from",
+                "valid_to",
+                "metadata_json",
+                "created_at",
+            },
+        )
+        self._require_exact_columns(
+            "observed_series",
+            {
+                "series_id",
+                "station_uid",
+                "variable_code",
+                "state",
+                "created_at",
+            },
+        )
+        self._require_exact_columns(
+            "manual_edit",
+            {
+                "manual_edit_id",
+                "asset_id",
+                "edit_kind",
+                "t0_step",
+                "t1_step",
+                "shift_lat",
+                "shift_lon",
+                "rotation_deg",
+                "multiplication_factor",
+                "editor",
+                "reason",
+                "metadata_json",
+                "created_at",
+            },
+        )
 
         variable_codes = {
             row["variable_code"]
@@ -78,7 +97,7 @@ class HistoryRepository:
         expected_variables = {"rain", "level", "flow"}
         if not expected_variables.issubset(variable_codes):
             raise RuntimeError(
-                "Banco historico incompatível com o catalogo atual de variaveis. "
+                "Banco historico incompativel com o catalogo atual de variaveis. "
                 f"Esperado pelo menos {sorted(expected_variables)}, encontrado {sorted(variable_codes)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
@@ -91,13 +110,13 @@ class HistoryRepository:
         expected_providers = {"ana", "inmet", "ecmwf"}
         if not expected_providers.issubset(provider_codes):
             raise RuntimeError(
-                "Banco historico incompatível com o catalogo atual de providers. "
+                "Banco historico incompativel com o catalogo atual de providers. "
                 f"Esperado pelo menos {sorted(expected_providers)}, encontrado {sorted(provider_codes)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
             )
 
-    def get_provider_stations(self, provider_code: str) -> list[dict]:
+    def get_provider_stations(self, provider_code: str) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             """
             SELECT station_uid, station_code, station_name, provider_code
@@ -167,7 +186,7 @@ class HistoryRepository:
         self.connection.commit()
         return len(rows)
 
-    def get_asset_by_relative_path(self, relative_path: str) -> dict | None:
+    def get_asset_by_relative_path(self, relative_path: str) -> dict[str, Any] | None:
         row = self.connection.execute(
             """
             SELECT
@@ -190,6 +209,52 @@ class HistoryRepository:
             return None
         return dict(row)
 
+    def get_asset_by_id(self, asset_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+                created_at
+            FROM asset
+            WHERE asset_id = ?
+            """,
+            (asset_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def list_ecmwf_assets(self, *, asset_kind: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+                created_at
+            FROM asset
+            WHERE provider_code = 'ecmwf'
+              AND asset_kind = ?
+            ORDER BY COALESCE(valid_from, created_at) DESC, created_at DESC
+            """,
+            (asset_kind,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_asset(
         self,
         *,
@@ -202,7 +267,7 @@ class HistoryRepository:
         valid_from: str | None = None,
         valid_to: str | None = None,
         metadata: dict | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         metadata_json = json.dumps(metadata or {}, sort_keys=True, ensure_ascii=True)
         self.connection.execute(
             """
@@ -245,7 +310,7 @@ class HistoryRepository:
             raise RuntimeError(f"Falha ao garantir asset relative_path={relative_path}.")
         return ensured_asset
 
-    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict | None:
+    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict[str, Any] | None:
         if isinstance(reference_time, datetime):
             reference_text = reference_time.isoformat(timespec="seconds")
         else:
@@ -278,3 +343,118 @@ class HistoryRepository:
         if row is None:
             return None
         return dict(row)
+
+    def insert_forecast_manual_edit(
+        self,
+        *,
+        asset_id: str,
+        t0_step: int,
+        t1_step: int,
+        shift_lat: float,
+        shift_lon: float,
+        rotation_deg: float,
+        multiplication_factor: float,
+        editor: str | None,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+        edit_kind: str = FORECAST_EDIT_KIND,
+    ) -> dict[str, Any]:
+        if self.get_asset_by_id(asset_id) is None:
+            raise ValueError(f"Asset {asset_id!r} was not found in history.")
+        if t1_step < t0_step:
+            raise ValueError("t1_step must be >= t0_step.")
+        if multiplication_factor <= 0:
+            raise ValueError("multiplication_factor must be > 0.")
+
+        metadata_json = json.dumps(metadata or {}, sort_keys=True, ensure_ascii=True)
+        cursor = self.connection.execute(
+            """
+            INSERT INTO manual_edit (
+                asset_id,
+                edit_kind,
+                t0_step,
+                t1_step,
+                shift_lat,
+                shift_lon,
+                rotation_deg,
+                multiplication_factor,
+                editor,
+                reason,
+                metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                asset_id,
+                edit_kind,
+                int(t0_step),
+                int(t1_step),
+                float(shift_lat),
+                float(shift_lon),
+                float(rotation_deg),
+                float(multiplication_factor),
+                editor,
+                reason,
+                metadata_json,
+            ),
+        )
+        self.connection.commit()
+        row = self.connection.execute(
+            """
+            SELECT
+                manual_edit_id,
+                asset_id,
+                edit_kind,
+                t0_step,
+                t1_step,
+                shift_lat,
+                shift_lon,
+                rotation_deg,
+                multiplication_factor,
+                editor,
+                reason,
+                metadata_json,
+                created_at
+            FROM manual_edit
+            WHERE manual_edit_id = ?
+            """,
+            (int(cursor.lastrowid),),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Falha ao persistir manual_edit de forecast ECMWF.")
+        return dict(row)
+
+    def list_forecast_manual_edits(self, asset_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                manual_edit_id,
+                asset_id,
+                edit_kind,
+                t0_step,
+                t1_step,
+                shift_lat,
+                shift_lon,
+                rotation_deg,
+                multiplication_factor,
+                editor,
+                reason,
+                metadata_json,
+                created_at
+            FROM manual_edit
+            WHERE asset_id = ?
+              AND edit_kind = ?
+            ORDER BY created_at DESC, manual_edit_id DESC
+            """,
+            (asset_id, FORECAST_EDIT_KIND),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def serialize_metadata_payload(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, dict):
+        return value
+    raise TypeError(f"Unsupported metadata payload type: {type(value)!r}")
