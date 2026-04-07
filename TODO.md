@@ -1,7 +1,6 @@
-- Consulta a API deve usar o mesmo datetime para todos os dados (demora na aquisição está fazendo coletar dados em períodos ligeiramete diferentes)
 - Implementar consulta aos dados do INMET
 - Resumos para regiões/bacias selecionadas
-- Implementar pytests pra ficar tudo redondinho
 - GeoPackage com todos os dados espaciais estáticos, com simbology
 - Construção do artefato report-ready
-- Processamento dos dados obs e prev para o MGB (chuvabin)
+- QC para dados observados
+- QC para o forecast
