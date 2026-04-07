@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -69,7 +69,6 @@ def build_map_cache_key(
     station_uid: int | None = None,
     mini_id: int | None = None,
 ) -> str:
-    # Station and mini selections intentionally do not affect the key.
     payload = {
         "selected_layer_name": selected_layer_name,
         "opacity": round(float(opacity), 4),
@@ -152,7 +151,7 @@ class RasterClickPopup(branca.element.MacroElement):
             var rasterData = {{this.data}};
             var rasterBounds = {south: {{this.south}}, west: {{this.west}}, north: {{this.north}}, east: {{this.east}}};
             (function attachRasterClick() {
-                var mapRef = window.map;
+                var mapRef = {{this._parent.get_name()}};
                 if (!mapRef) {
                     setTimeout(attachRasterClick, 50);
                     return;
@@ -185,6 +184,42 @@ class RasterClickPopup(branca.element.MacroElement):
         )
 
 
+def add_raster_overlay(
+    fmap: folium.Map,
+    *,
+    data: np.ndarray,
+    bounds: tuple[float, float, float, float],
+    layer_name: str,
+    opacity: float,
+    horizon_label: Optional[str] = None,
+    feature_group_name: Optional[str] = None,
+    show: bool = True,
+) -> bool:
+    finite_values = np.asarray(data, dtype=np.float64)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return False
+
+    west, south, east, north = bounds
+    vmin, vmax = np.nanpercentile(data, [5, 95])
+    overlay = ImageOverlay(
+        name=layer_name,
+        image=np.asarray(data, dtype=np.float64),
+        bounds=[[south, west], [north, east]],
+        opacity=float(opacity),
+        interactive=False,
+        cross_origin=False,
+        mercator_project=False,
+        colormap=color_ramp_factory(float(vmin), float(vmax), float(opacity)),
+    )
+    raster_group = folium.FeatureGroup(name=feature_group_name or layer_name, show=show)
+    overlay.add_to(raster_group)
+    raster_group.add_to(fmap)
+    add_legend(fmap, float(vmin), float(vmax), horizon_label=horizon_label or layer_name)
+    RasterClickPopup(np.asarray(data, dtype=np.float64), bounds, layer_name).add_to(fmap)
+    return True
+
+
 def build_ops_map(
     selected_layer_name: Optional[str],
     opacity: float,
@@ -198,25 +233,17 @@ def build_ops_map(
     if selected_layer_name:
         meta = raster_catalog.get(selected_layer_name)
         if meta:
-            data, (west, south, east, north) = ops_dashboard_data.load_raster_data(Path(str(meta["path"])))
-            finite_values = data[np.isfinite(data)]
-            if finite_values.size > 0:
-                vmin, vmax = np.nanpercentile(data, [5, 95])
-                overlay = ImageOverlay(
-                    name=f"Raster {meta['horizon_label']}",
-                    image=data,
-                    bounds=[[south, west], [north, east]],
-                    opacity=opacity,
-                    interactive=False,
-                    cross_origin=False,
-                    mercator_project=False,
-                    colormap=color_ramp_factory(vmin, vmax, opacity),
-                )
-                raster_group = folium.FeatureGroup(name="Chuva acumulada", show=True)
-                overlay.add_to(raster_group)
-                raster_group.add_to(fmap)
-                add_legend(fmap, vmin, vmax, horizon_label=str(meta["horizon_label"]))
-                RasterClickPopup(data, (west, south, east, north), str(meta["horizon_label"])).add_to(fmap)
+            data, bounds = ops_dashboard_data.load_raster_data(Path(str(meta["path"])))
+            add_raster_overlay(
+                fmap,
+                data=data,
+                bounds=bounds,
+                layer_name=f"Raster {meta['horizon_label']}",
+                opacity=opacity,
+                horizon_label=str(meta["horizon_label"]),
+                feature_group_name="Chuva acumulada",
+                show=True,
+            )
 
     if rivers_geojson and rivers_geojson.get("features"):
         rivers_layer = folium.FeatureGroup(name="Rios MGB", show=True)
@@ -299,9 +326,6 @@ def build_map_render_artifacts(
     component_key: str = "ops-dashboard-map",
     returned_objects: Iterable[str] = MAP_RETURNED_OBJECTS,
 ) -> MapRenderArtifacts:
-    # These helpers come from streamlit-folium internals. We pin to the package
-    # behavior available with Streamlit 1.49.1 and avoid calling st_folium(),
-    # because st_folium() re-renders the full Folium tree on every interaction.
     from streamlit_folium import _get_header, _get_html, _get_map_string, _component_func, generate_js_hash, get_full_id
 
     _ = _component_func

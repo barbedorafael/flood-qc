@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import folium
+import folium.plugins
 import numpy as np
 import pandas as pd
-from folium.raster_layers import ImageOverlay
 
 from common.paths import REPO_ROOT, history_db_path
 from common.time_utils import TIMEZONE
@@ -37,6 +37,29 @@ class ForecastPreview:
             float(np.min(self.latitudes)),
             float(np.max(self.longitudes)),
             float(np.max(self.latitudes)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastPreviewRequest:
+    asset_id: str
+    t0_step: int
+    t1_step: int
+    shift_lat: float = 0.0
+    shift_lon: float = 0.0
+    rotation_deg: float = 0.0
+    multiplication_factor: float = 1.0
+    opacity: float = 0.7
+
+    @property
+    def has_correction(self) -> bool:
+        return any(
+            [
+                abs(self.shift_lat) > 1e-9,
+                abs(self.shift_lon) > 1e-9,
+                abs(self.rotation_deg) > 1e-9,
+                abs(self.multiplication_factor - 1.0) > 1e-9,
+            ]
         )
 
 
@@ -207,6 +230,45 @@ def apply_preview_corrections(
     return replace(preview, data=corrected_data, title=f"{preview.title} | corrigido")
 
 
+def build_preview_from_request(
+    request: ForecastPreviewRequest,
+    *,
+    database_path: Path | None = None,
+) -> ForecastPreview:
+    return build_forecast_preview(
+        request.asset_id,
+        t0_step=int(request.t0_step),
+        t1_step=int(request.t1_step),
+        database_path=database_path,
+    )
+
+
+def build_preview_pair_from_request(
+    request: ForecastPreviewRequest,
+    *,
+    database_path: Path | None = None,
+) -> tuple[ForecastPreview, ForecastPreview | None]:
+    preview = build_preview_from_request(request, database_path=database_path)
+    if not request.has_correction:
+        return preview, None
+
+    corrected_preview = apply_preview_corrections(
+        preview,
+        [
+            ForecastCorrectionInstruction(
+                asset_id=request.asset_id,
+                t0_step=int(request.t0_step),
+                t1_step=int(request.t1_step),
+                shift_lat=float(request.shift_lat),
+                shift_lon=float(request.shift_lon),
+                rotation_deg=float(request.rotation_deg),
+                multiplication_factor=float(request.multiplication_factor),
+            )
+        ],
+    )
+    return preview, corrected_preview
+
+
 def export_preview_raster(preview: ForecastPreview, target_path: Path) -> Path:
     try:
         import rasterio
@@ -238,11 +300,7 @@ def export_preview_raster(preview: ForecastPreview, target_path: Path) -> Path:
     return target_path
 
 
-def build_forecast_map(preview: ForecastPreview, *, opacity: float = 0.7) -> folium.Map:
-    west, south, east, north = preview.bounds
-    center = [float((south + north) / 2.0), float((west + east) / 2.0)]
-    fmap = folium.Map(location=center, zoom_start=7, tiles="CartoDB Positron", control_scale=True)
-
+def _add_rivers_layer(fmap: folium.Map) -> None:
     rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson()
     if rivers_geojson and rivers_geojson.get("features"):
         folium.GeoJson(
@@ -251,34 +309,69 @@ def build_forecast_map(preview: ForecastPreview, *, opacity: float = 0.7) -> fol
             name="Rios MGB",
         ).add_to(fmap)
 
-    finite_values = np.asarray(preview.data, dtype=np.float64)
-    finite_values = finite_values[np.isfinite(finite_values)]
-    if finite_values.size > 0:
-        vmin, vmax = np.nanpercentile(preview.data, [5, 95])
-        overlay = ImageOverlay(
-            name=preview.title,
-            image=np.asarray(preview.data, dtype=np.float64),
-            bounds=[[south, west], [north, east]],
-            opacity=float(opacity),
-            interactive=False,
-            cross_origin=False,
-            mercator_project=False,
-            colormap=ops_dashboard_map.color_ramp_factory(float(vmin), float(vmax), float(opacity)),
-        )
-        layer = folium.FeatureGroup(name=preview.title, show=True)
-        overlay.add_to(layer)
-        layer.add_to(fmap)
-        ops_dashboard_map.add_legend(fmap, float(vmin), float(vmax), horizon_label=preview.title)
 
+def _build_single_forecast_map(preview: ForecastPreview, *, opacity: float = 0.7) -> folium.Map:
+    west, south, east, north = preview.bounds
+    center = [float((south + north) / 2.0), float((west + east) / 2.0)]
+    fmap = folium.Map(location=center, zoom_start=7, tiles="CartoDB Positron", control_scale=True)
+    _add_rivers_layer(fmap)
+    ops_dashboard_map.add_raster_overlay(
+        fmap,
+        data=np.asarray(preview.data, dtype=np.float64),
+        bounds=preview.bounds,
+        layer_name=preview.title,
+        opacity=opacity,
+        horizon_label=preview.title,
+        feature_group_name=preview.title,
+        show=True,
+    )
     folium.LayerControl(collapsed=False).add_to(fmap)
     return fmap
+
+
+def _build_dual_forecast_map(
+    original_preview: ForecastPreview,
+    corrected_preview: ForecastPreview,
+    *,
+    opacity: float = 0.7,
+) -> folium.plugins.DualMap:
+    west, south, east, north = original_preview.bounds
+    center = [float((south + north) / 2.0), float((west + east) / 2.0)]
+    fmap = folium.plugins.DualMap(location=center, zoom_start=7, tiles="CartoDB Positron", control_scale=True)
+
+    for side_map, preview in ((fmap.m1, original_preview), (fmap.m2, corrected_preview)):
+        _add_rivers_layer(side_map)
+        ops_dashboard_map.add_raster_overlay(
+            side_map,
+            data=np.asarray(preview.data, dtype=np.float64),
+            bounds=preview.bounds,
+            layer_name=preview.title,
+            opacity=opacity,
+            horizon_label=preview.title,
+            feature_group_name=preview.title,
+            show=True,
+        )
+        folium.LayerControl(collapsed=False).add_to(side_map)
+    return fmap
+
+
+def build_forecast_map(
+    preview: ForecastPreview,
+    *,
+    corrected_preview: ForecastPreview | None = None,
+    opacity: float = 0.7,
+) -> folium.Map | folium.plugins.DualMap:
+    if corrected_preview is None:
+        return _build_single_forecast_map(preview, opacity=opacity)
+    return _build_dual_forecast_map(preview, corrected_preview, opacity=opacity)
 
 
 def build_forecast_map_artifacts(
     preview: ForecastPreview,
     *,
+    corrected_preview: ForecastPreview | None = None,
     opacity: float = 0.7,
     component_key: str = "forecast-preview-map",
 ) -> ops_dashboard_map.MapRenderArtifacts:
-    fmap = build_forecast_map(preview, opacity=opacity)
+    fmap = build_forecast_map(preview, corrected_preview=corrected_preview, opacity=opacity)
     return ops_dashboard_map.build_map_render_artifacts(fmap, component_key=component_key)

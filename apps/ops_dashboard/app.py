@@ -113,6 +113,42 @@ def get_forecast_preview(asset_id: str, t0_step: int, t1_step: int) -> ops_dashb
     return ops_dashboard_forecast.build_forecast_preview(asset_id, t0_step=t0_step, t1_step=t1_step)
 
 
+@st.cache_resource(show_spinner=False, max_entries=128)
+def get_forecast_map_artifacts(
+    asset_id: str,
+    t0_step: int,
+    t1_step: int,
+    shift_lat: float,
+    shift_lon: float,
+    rotation_deg: float,
+    multiplication_factor: float,
+    opacity: float,
+) -> ops_dashboard_map.MapRenderArtifacts:
+    request = ops_dashboard_forecast.ForecastPreviewRequest(
+        asset_id=asset_id,
+        t0_step=int(t0_step),
+        t1_step=int(t1_step),
+        shift_lat=float(shift_lat),
+        shift_lon=float(shift_lon),
+        rotation_deg=float(rotation_deg),
+        multiplication_factor=float(multiplication_factor),
+        opacity=float(opacity),
+    )
+    preview, corrected_preview = ops_dashboard_forecast.build_preview_pair_from_request(request)
+    component_key = (
+        f"forecast-map-{asset_id}-{int(t0_step)}-{int(t1_step)}-"
+        f"{round(float(shift_lat), 4)}-{round(float(shift_lon), 4)}-"
+        f"{round(float(rotation_deg), 4)}-{round(float(multiplication_factor), 4)}-"
+        f"{round(float(opacity), 4)}"
+    )
+    return ops_dashboard_forecast.build_forecast_map_artifacts(
+        preview,
+        corrected_preview=corrected_preview,
+        opacity=float(opacity),
+        component_key=component_key,
+    )
+
+
 @st.cache_resource
 def get_map_artifacts(
     map_cache_key: str,
@@ -136,6 +172,7 @@ def get_map_artifacts(
 def initialize_session_state() -> None:
     st.session_state.setdefault("mini_id", None)
     st.session_state.setdefault("last_refresh_at", None)
+    st.session_state.setdefault("forecast_applied_request", None)
 
 
 def trigger_manual_refresh() -> None:
@@ -143,6 +180,13 @@ def trigger_manual_refresh() -> None:
     st.cache_resource.clear()
     st.session_state["last_refresh_at"] = pd.Timestamp.now().strftime(REFRESH_TS_FORMAT)
     st.rerun()
+
+
+def clear_saved_forecast_edits_cache(asset_id: str) -> None:
+    try:
+        get_saved_forecast_edits.clear(asset_id)
+    except TypeError:
+        get_saved_forecast_edits.clear()
 
 
 def format_mm(value: float | int | None) -> str:
@@ -647,25 +691,47 @@ def render_monitoring_tab(
                 )
 
 
-def render_forecast_preview_map(preview: ops_dashboard_forecast.ForecastPreview, *, opacity: float, component_key: str) -> None:
-    artifacts = ops_dashboard_forecast.build_forecast_map_artifacts(
-        preview,
-        opacity=opacity,
-        component_key=component_key,
-    )
+@st.fragment
+def render_forecast_map_fragment(map_artifacts: ops_dashboard_map.MapRenderArtifacts) -> None:
     ops_dashboard_map.render_map_component(
-        artifacts,
+        map_artifacts,
         height=520,
         use_container_width=True,
     )
+
+
+def build_forecast_instruction_from_request(
+    request: ops_dashboard_forecast.ForecastPreviewRequest,
+) -> ForecastCorrectionInstruction:
+    return ForecastCorrectionInstruction(
+        asset_id=request.asset_id,
+        t0_step=int(request.t0_step),
+        t1_step=int(request.t1_step),
+        shift_lat=float(request.shift_lat),
+        shift_lon=float(request.shift_lon),
+        rotation_deg=float(request.rotation_deg),
+        multiplication_factor=float(request.multiplication_factor),
+    )
+
+
+def resolve_default_forecast_window(
+    step_options: list[int],
+    applied_request: ops_dashboard_forecast.ForecastPreviewRequest | None,
+    asset_id: str,
+) -> tuple[int, int]:
+    if applied_request is not None and applied_request.asset_id == asset_id:
+        candidate = (int(applied_request.t0_step), int(applied_request.t1_step))
+        if candidate[0] in step_options and candidate[1] in step_options and candidate[0] <= candidate[1]:
+            return candidate
+    return int(step_options[0]), int(step_options[-1])
 
 
 def render_forecast_tab() -> None:
     assets_df = get_forecast_assets()
     st.subheader("Chuva prevista ECMWF")
     st.caption(
-        "Selecione um ciclo ECMWF canonico, escolha a janela temporal e ajuste a correcao parametrica. "
-        "A pre-visualizacao e imediata e a persistencia no history.sqlite e append-only."
+        "Selecione um ciclo ECMWF canonico, ajuste a janela temporal e os parametros de correcao, "
+        "e clique em Carregar mapas para atualizar o preview sincronizado."
     )
     if assets_df.empty:
         st.info("Nenhum asset ECMWF canonicamente registrado foi encontrado em data/history.sqlite.")
@@ -686,142 +752,160 @@ def render_forecast_tab() -> None:
         return
 
     step_options = steps_df["step_hours"].astype(int).tolist()
-    default_t1 = step_options[-1]
-    t1_step = st.selectbox(
-        "Passo final (t1)",
-        options=step_options,
-        index=step_options.index(default_t1),
-        format_func=lambda step: steps_df.loc[steps_df["step_hours"] == step, "label"].iloc[0],
-        key="forecast_t1_step",
-    )
-    t0_options = [step for step in step_options if step <= int(t1_step)]
-    t0_step = st.selectbox(
-        "Passo inicial (t0)",
-        options=t0_options,
-        index=0,
-        format_func=lambda step: steps_df.loc[steps_df["step_hours"] == step, "label"].iloc[0],
-        key="forecast_t0_step",
-    )
+    step_labels = {int(row.step_hours): str(row.label) for row in steps_df.itertuples()}
+    applied_request = st.session_state.get("forecast_applied_request")
+    if not isinstance(applied_request, ops_dashboard_forecast.ForecastPreviewRequest):
+        applied_request = None
+    default_window = resolve_default_forecast_window(step_options, applied_request, selected_asset_id)
 
-    preview = get_forecast_preview(selected_asset_id, int(t0_step), int(t1_step))
+    with st.form("forecast_preview_form"):
+        controls_left, controls_right = st.columns([1.15, 0.85])
+        with controls_left:
+            st.markdown("**Parametros do preview**")
+            selected_window = st.select_slider(
+                "Janela temporal",
+                options=step_options,
+                value=default_window,
+                format_func=lambda step: step_labels.get(int(step), str(step)),
+                key=f"forecast_draft_step_window__{selected_asset_id}",
+            )
+            shift_lat = st.number_input("shift_lat (pixels)", value=0.0, step=1.0, key="forecast_draft_shift_lat")
+            shift_lon = st.number_input("shift_lon (pixels)", value=0.0, step=1.0, key="forecast_draft_shift_lon")
+            rotation_deg = st.number_input("rotation_deg", value=0.0, step=1.0, key="forecast_draft_rotation_deg")
+            multiplication_factor = st.number_input(
+                "multiplication_factor",
+                min_value=0.01,
+                value=1.0,
+                step=0.05,
+                key="forecast_draft_multiplication_factor",
+            )
+            opacity = st.slider(
+                "Transparencia do mapa",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.75,
+                step=0.05,
+                key="forecast_draft_opacity",
+            )
+        with controls_right:
+            st.markdown("**Passos disponiveis**")
+            st.dataframe(
+                steps_df[["step_hours", "valid_time"]].rename(
+                    columns={"step_hours": "t", "valid_time": "valid_time_local"}
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+        load_preview = st.form_submit_button("Carregar mapas", use_container_width=True)
 
-    controls_left, controls_right = st.columns([1.15, 0.85])
-    with controls_left:
-        st.markdown("**Parametros de correcao**")
-        shift_lat = st.number_input("shift_lat (pixels)", value=0.0, step=1.0, key="forecast_shift_lat")
-        shift_lon = st.number_input("shift_lon (pixels)", value=0.0, step=1.0, key="forecast_shift_lon")
-        rotation_deg = st.number_input("rotation_deg", value=0.0, step=1.0, key="forecast_rotation_deg")
-        multiplication_factor = st.number_input(
-            "multiplication_factor",
-            min_value=0.01,
-            value=1.0,
-            step=0.05,
-            key="forecast_multiplication_factor",
+    if load_preview:
+        st.session_state["forecast_applied_request"] = ops_dashboard_forecast.ForecastPreviewRequest(
+            asset_id=selected_asset_id,
+            t0_step=int(selected_window[0]),
+            t1_step=int(selected_window[1]),
+            shift_lat=float(shift_lat),
+            shift_lon=float(shift_lon),
+            rotation_deg=float(rotation_deg),
+            multiplication_factor=float(multiplication_factor),
+            opacity=float(opacity),
         )
-        opacity = st.slider("Transparencia do mapa", min_value=0.1, max_value=1.0, value=0.75, step=0.05, key="forecast_opacity")
+        applied_request = st.session_state["forecast_applied_request"]
 
-    with controls_right:
-        st.markdown("**Janela selecionada**")
-        st.caption(preview.title)
+    current_request = applied_request if applied_request is not None and applied_request.asset_id == selected_asset_id else None
+    preview: ops_dashboard_forecast.ForecastPreview | None = None
+
+    if current_request is None:
+        st.info("Ajuste os parametros e clique em `Carregar mapas` para montar o preview deste ciclo ECMWF.")
+    else:
+        preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
+        map_artifacts = get_forecast_map_artifacts(
+            current_request.asset_id,
+            int(current_request.t0_step),
+            int(current_request.t1_step),
+            float(current_request.shift_lat),
+            float(current_request.shift_lon),
+            float(current_request.rotation_deg),
+            float(current_request.multiplication_factor),
+            float(current_request.opacity),
+        )
+
+        selected_steps = [int(current_request.t0_step), int(current_request.t1_step)]
+        selected_rows = steps_df.loc[steps_df["step_hours"].isin(selected_steps), ["step_hours", "valid_time"]].rename(
+            columns={"step_hours": "t", "valid_time": "valid_time_local"}
+        )
+        with st.container(border=True):
+            st.markdown("**Janela carregada**")
+            st.caption(preview.title)
+            st.dataframe(selected_rows, hide_index=True, use_container_width=True)
+
+        with st.container(border=True):
+            if current_request.has_correction:
+                st.caption("Mapa original e corrigido sincronizados. Clique no raster para inspecionar os valores.")
+            else:
+                st.caption("Mapa do forecast. Clique no raster para inspecionar os valores.")
+            render_forecast_map_fragment(map_artifacts)
+
+        instruction = build_forecast_instruction_from_request(current_request)
+        st.markdown("**Instrucao carregada**")
         st.dataframe(
-            steps_df.loc[steps_df["step_hours"].isin([int(t0_step), int(t1_step)]), ["step_hours", "valid_time"]].rename(
-                columns={"step_hours": "t", "valid_time": "valid_time_local"}
+            pd.DataFrame(
+                [
+                    {
+                        "asset_id": instruction.asset_id,
+                        "t0_step": instruction.t0_step,
+                        "t1_step": instruction.t1_step,
+                        "shift_lat": instruction.shift_lat,
+                        "shift_lon": instruction.shift_lon,
+                        "rotation_deg": instruction.rotation_deg,
+                        "multiplication_factor": instruction.multiplication_factor,
+                    }
+                ]
             ),
             hide_index=True,
             use_container_width=True,
         )
 
-    draft_instruction = ForecastCorrectionInstruction(
-        asset_id=selected_asset_id,
-        t0_step=int(t0_step),
-        t1_step=int(t1_step),
-        shift_lat=float(shift_lat),
-        shift_lon=float(shift_lon),
-        rotation_deg=float(rotation_deg),
-        multiplication_factor=float(multiplication_factor),
-    )
-    has_preview_correction = any(
-        [
-            abs(draft_instruction.shift_lat) > 1e-9,
-            abs(draft_instruction.shift_lon) > 1e-9,
-            abs(draft_instruction.rotation_deg) > 1e-9,
-            abs(draft_instruction.multiplication_factor - 1.0) > 1e-9,
-        ]
-    )
-
-    if has_preview_correction:
-        corrected_preview = ops_dashboard_forecast.apply_preview_corrections(preview, [draft_instruction])
-        original_col, corrected_col = st.columns(2)
-        with original_col:
-            with st.container(border=True):
-                st.caption("Mapa original")
-                render_forecast_preview_map(
-                    preview,
-                    opacity=opacity,
-                    component_key=f"forecast-original-{selected_asset_id}-{t0_step}-{t1_step}",
-                )
-        with corrected_col:
-            with st.container(border=True):
-                st.caption("Mapa corrigido")
-                render_forecast_preview_map(
-                    corrected_preview,
-                    opacity=opacity,
-                    component_key=(
-                        f"forecast-corrected-{selected_asset_id}-{t0_step}-{t1_step}-"
-                        f"{shift_lat}-{shift_lon}-{rotation_deg}-{multiplication_factor}"
-                    ),
-                )
-    else:
-        with st.container(border=True):
-            st.caption("Mapa do forecast")
-            render_forecast_preview_map(
-                preview,
-                opacity=opacity,
-                component_key=f"forecast-single-{selected_asset_id}-{t0_step}-{t1_step}",
+    st.markdown("**Persistencia da correcao**")
+    save_message: str | None = None
+    with st.form("forecast_save_form"):
+        save_left, save_right = st.columns([0.65, 0.35])
+        with save_left:
+            editor = st.text_input("Editor", key="forecast_draft_editor")
+            reason = st.text_input("Motivo da correcao", key="forecast_draft_reason")
+        with save_right:
+            st.caption("Persistencia")
+            save_clicked = st.form_submit_button(
+                "Salvar instrucao",
+                use_container_width=True,
+                disabled=current_request is None,
             )
 
-    st.markdown("**Instrucao em rascunho**")
-    draft_df = pd.DataFrame(
-        [
-            {
-                "asset_id": draft_instruction.asset_id,
-                "t0_step": draft_instruction.t0_step,
-                "t1_step": draft_instruction.t1_step,
-                "shift_lat": draft_instruction.shift_lat,
-                "shift_lon": draft_instruction.shift_lon,
-                "rotation_deg": draft_instruction.rotation_deg,
-                "multiplication_factor": draft_instruction.multiplication_factor,
-            }
-        ]
-    )
-    st.dataframe(draft_df, hide_index=True, use_container_width=True)
+    if save_clicked:
+        if current_request is None or preview is None:
+            st.warning("Carregue o preview antes de salvar a instrucao.")
+        elif not reason.strip():
+            st.warning("Informe o motivo da correcao antes de salvar.")
+        else:
+            instruction = build_forecast_instruction_from_request(current_request)
+            with HistoryRepository(history_db_path()) as repository:
+                repository.insert_forecast_manual_edit(
+                    asset_id=instruction.asset_id,
+                    t0_step=instruction.t0_step,
+                    t1_step=instruction.t1_step,
+                    shift_lat=instruction.shift_lat,
+                    shift_lon=instruction.shift_lon,
+                    rotation_deg=instruction.rotation_deg,
+                    multiplication_factor=instruction.multiplication_factor,
+                    editor=editor.strip() or None,
+                    reason=reason.strip(),
+                    metadata={"mode_label": preview.mode_label, "relative_path": preview.relative_path},
+                )
+            clear_saved_forecast_edits_cache(selected_asset_id)
+            st.session_state["forecast_draft_reason"] = ""
+            save_message = "Instrucao de correcao ECMWF salva no history.sqlite."
 
-    save_left, save_right = st.columns([0.65, 0.35])
-    with save_left:
-        editor = st.text_input("Editor", key="forecast_editor")
-        reason = st.text_input("Motivo da correcao", key="forecast_reason")
-    with save_right:
-        st.caption("Persistencia")
-        if st.button("Salvar instrucao", use_container_width=True, key="forecast_save_instruction"):
-            if not reason.strip():
-                st.warning("Informe o motivo da correcao antes de salvar.")
-            else:
-                with HistoryRepository(history_db_path()) as repository:
-                    repository.insert_forecast_manual_edit(
-                        asset_id=draft_instruction.asset_id,
-                        t0_step=draft_instruction.t0_step,
-                        t1_step=draft_instruction.t1_step,
-                        shift_lat=draft_instruction.shift_lat,
-                        shift_lon=draft_instruction.shift_lon,
-                        rotation_deg=draft_instruction.rotation_deg,
-                        multiplication_factor=draft_instruction.multiplication_factor,
-                        editor=editor.strip() or None,
-                        reason=reason.strip(),
-                        metadata={"mode_label": preview.mode_label, "relative_path": preview.relative_path},
-                    )
-                st.cache_data.clear()
-                st.success("Instrucao de correcao ECMWF salva no history.sqlite.")
-                st.rerun()
+    if save_message:
+        st.success(save_message)
 
     st.markdown("**Correcoes salvas**")
     saved_edits = get_saved_forecast_edits(selected_asset_id)

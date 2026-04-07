@@ -1,7 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 
+import folium
+import folium.plugins
 import numpy as np
 
 from ingest.forecast_grid import TpGribMessage
@@ -18,6 +20,20 @@ def _message(step_hours: int, value: float) -> TpGribMessage:
         latitudes=np.array([-29.5, -30.5], dtype=np.float64),
         longitudes=np.array([-51.5, -50.5], dtype=np.float64),
         values_mm=np.full((2, 2), value, dtype=np.float64),
+    )
+
+
+def _preview(title: str, data: np.ndarray | None = None) -> ops_dashboard_forecast.ForecastPreview:
+    return ops_dashboard_forecast.ForecastPreview(
+        asset_id="asset",
+        relative_path="forecast.grib2",
+        data=np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64) if data is None else data,
+        latitudes=np.array([-29.5, -30.5], dtype=np.float64),
+        longitudes=np.array([-51.5, -50.5], dtype=np.float64),
+        t0_step=0,
+        t1_step=3,
+        mode_label="acumulado_nativo",
+        title=title,
     )
 
 
@@ -64,17 +80,7 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
 
 
 def test_ops_dashboard_forecast_applies_preview_correction() -> None:
-    preview = ops_dashboard_forecast.ForecastPreview(
-        asset_id="asset",
-        relative_path="forecast.grib2",
-        data=np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64),
-        latitudes=np.array([-29.5, -30.5], dtype=np.float64),
-        longitudes=np.array([-51.5, -50.5], dtype=np.float64),
-        t0_step=0,
-        t1_step=3,
-        mode_label="acumulado_nativo",
-        title="teste",
-    )
+    preview = _preview("teste")
     instruction = ecmwf_forecast_correction.ForecastCorrectionInstruction(
         asset_id="asset",
         t0_step=0,
@@ -89,3 +95,25 @@ def test_ops_dashboard_forecast_applies_preview_correction() -> None:
 
     assert corrected.data[0, 0] == 0.0
     assert corrected.data[1, 0] == 2.0
+
+
+def test_build_forecast_map_returns_single_map_with_raster_inspector(monkeypatch) -> None:
+    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda: None)
+
+    fmap = ops_dashboard_forecast.build_forecast_map(_preview("Mapa original"), opacity=0.65)
+
+    child_names = {child._name for child in fmap._children.values()}
+    assert isinstance(fmap, folium.Map)
+    assert "RasterClickPopup" in child_names
+
+
+def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> None:
+    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda: None)
+    original = _preview("Mapa original")
+    corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
+
+    fmap = ops_dashboard_forecast.build_forecast_map(original, corrected_preview=corrected, opacity=0.8)
+
+    assert isinstance(fmap, folium.plugins.DualMap)
+    assert "RasterClickPopup" in {child._name for child in fmap.m1._children.values()}
+    assert "RasterClickPopup" in {child._name for child in fmap.m2._children.values()}
