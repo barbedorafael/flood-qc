@@ -51,6 +51,13 @@ class MapRenderArtifacts:
     js_links: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RasterLegendSpec:
+    caption: str
+    vmin: float
+    vmax: float
+
+
 def build_file_version(path: Path) -> str:
     target = Path(path)
     if not target.exists():
@@ -133,6 +140,34 @@ def add_legend(fmap: folium.Map, vmin: float, vmax: float, *, horizon_label: Opt
     colormap.add_to(fmap)
 
 
+def build_raster_legend_spec(data: np.ndarray, *, caption: str) -> RasterLegendSpec | None:
+    finite_values = np.asarray(data, dtype=np.float64)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return None
+
+    vmin, vmax = np.nanpercentile(finite_values, [5, 95])
+    return RasterLegendSpec(caption=caption, vmin=float(vmin), vmax=float(vmax))
+
+
+def build_raster_legend_html(spec: RasterLegendSpec) -> str:
+    colors_hex = ["#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255)) for r, g, b in BLUES]
+    gradient = ", ".join(
+        f"{color} {int(round(index * 100 / max(1, len(colors_hex) - 1)))}%"
+        for index, color in enumerate(colors_hex)
+    )
+    return (
+        "<div style=\"padding:0.35rem 0 0.15rem 0;\">"
+        f"<div style=\"font-size:0.9rem;font-weight:600;margin-bottom:0.35rem;\">{spec.caption}</div>"
+        f"<div style=\"height:12px;border-radius:999px;background:linear-gradient(90deg, {gradient});\"></div>"
+        "<div style=\"display:flex;justify-content:space-between;font-size:0.8rem;color:#495057;margin-top:0.25rem;\">"
+        f"<span>{spec.vmin:.1f} mm</span>"
+        f"<span>{spec.vmax:.1f} mm</span>"
+        "</div>"
+        "</div>"
+    )
+
+
 class RasterClickPopup(branca.element.MacroElement):
     def __init__(self, data: np.ndarray, bounds: tuple[float, float, float, float], layer_name: str) -> None:
         super().__init__()
@@ -194,14 +229,14 @@ def add_raster_overlay(
     horizon_label: Optional[str] = None,
     feature_group_name: Optional[str] = None,
     show: bool = True,
+    include_legend: bool = True,
 ) -> bool:
-    finite_values = np.asarray(data, dtype=np.float64)
-    finite_values = finite_values[np.isfinite(finite_values)]
-    if finite_values.size == 0:
+    legend_spec = build_raster_legend_spec(np.asarray(data, dtype=np.float64), caption=horizon_label or layer_name)
+    if legend_spec is None:
         return False
 
     west, south, east, north = bounds
-    vmin, vmax = np.nanpercentile(data, [5, 95])
+    vmin, vmax = legend_spec.vmin, legend_spec.vmax
     overlay = ImageOverlay(
         name=layer_name,
         image=np.asarray(data, dtype=np.float64),
@@ -215,7 +250,8 @@ def add_raster_overlay(
     raster_group = folium.FeatureGroup(name=feature_group_name or layer_name, show=show)
     overlay.add_to(raster_group)
     raster_group.add_to(fmap)
-    add_legend(fmap, float(vmin), float(vmax), horizon_label=horizon_label or layer_name)
+    if include_legend:
+        add_legend(fmap, float(vmin), float(vmax), horizon_label=horizon_label or layer_name)
     RasterClickPopup(np.asarray(data, dtype=np.float64), bounds, layer_name).add_to(fmap)
     return True
 

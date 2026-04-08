@@ -63,6 +63,19 @@ class ForecastPreviewRequest:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ForecastMapPanelArtifacts:
+    title: str
+    legend_html: str
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastMapComparisonArtifacts:
+    map_artifacts: ops_dashboard_map.MapRenderArtifacts
+    original: ForecastMapPanelArtifacts
+    corrected: ForecastMapPanelArtifacts | None = None
+
+
 def _connect(database_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database_path)
     connection.row_factory = sqlite3.Row
@@ -324,8 +337,8 @@ def _build_single_forecast_map(preview: ForecastPreview, *, opacity: float = 0.7
         horizon_label=preview.title,
         feature_group_name=preview.title,
         show=True,
+        include_legend=False,
     )
-    folium.LayerControl(collapsed=False).add_to(fmap)
     return fmap
 
 
@@ -350,8 +363,8 @@ def _build_dual_forecast_map(
             horizon_label=preview.title,
             feature_group_name=preview.title,
             show=True,
+            include_legend=False,
         )
-        folium.LayerControl(collapsed=False).add_to(side_map)
     return fmap
 
 
@@ -372,6 +385,33 @@ def build_forecast_map_artifacts(
     corrected_preview: ForecastPreview | None = None,
     opacity: float = 0.7,
     component_key: str = "forecast-preview-map",
-) -> ops_dashboard_map.MapRenderArtifacts:
-    fmap = build_forecast_map(preview, corrected_preview=corrected_preview, opacity=opacity)
-    return ops_dashboard_map.build_map_render_artifacts(fmap, component_key=component_key)
+) -> ForecastMapComparisonArtifacts:
+    def build_panel(panel_preview: ForecastPreview) -> ForecastMapPanelArtifacts:
+        legend_spec = ops_dashboard_map.build_raster_legend_spec(
+            np.asarray(panel_preview.data, dtype=np.float64),
+            caption=panel_preview.title,
+        )
+        legend_html = (
+            ops_dashboard_map.build_raster_legend_html(legend_spec)
+            if legend_spec is not None
+            else "<div style=\"font-size:0.85rem;color:#868e96;\">Sem dados validos para legenda.</div>"
+        )
+        return ForecastMapPanelArtifacts(
+            title=panel_preview.title,
+            legend_html=legend_html,
+        )
+
+    if corrected_preview is None:
+        fmap = _build_single_forecast_map(preview, opacity=opacity)
+    else:
+        fmap = _build_dual_forecast_map(preview, corrected_preview, opacity=opacity)
+
+    original = build_panel(preview)
+    corrected = None
+    if corrected_preview is not None:
+        corrected = build_panel(corrected_preview)
+    return ForecastMapComparisonArtifacts(
+        map_artifacts=ops_dashboard_map.build_map_render_artifacts(fmap, component_key=component_key),
+        original=original,
+        corrected=corrected,
+    )

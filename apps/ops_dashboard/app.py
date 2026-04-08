@@ -123,7 +123,7 @@ def get_forecast_map_artifacts(
     rotation_deg: float,
     multiplication_factor: float,
     opacity: float,
-) -> ops_dashboard_map.MapRenderArtifacts:
+) -> ops_dashboard_forecast.ForecastMapComparisonArtifacts:
     request = ops_dashboard_forecast.ForecastPreviewRequest(
         asset_id=asset_id,
         t0_step=int(t0_step),
@@ -173,6 +173,9 @@ def initialize_session_state() -> None:
     st.session_state.setdefault("mini_id", None)
     st.session_state.setdefault("last_refresh_at", None)
     st.session_state.setdefault("forecast_applied_request", None)
+    st.session_state.setdefault("forecast_reason_nonce", 0)
+    st.session_state.setdefault("forecast_save_message", None)
+    st.session_state.setdefault("forecast_clear_reason", False)
 
 
 def trigger_manual_refresh() -> None:
@@ -692,12 +695,24 @@ def render_monitoring_tab(
 
 
 @st.fragment
-def render_forecast_map_fragment(map_artifacts: ops_dashboard_map.MapRenderArtifacts) -> None:
+def render_forecast_map_fragment(map_artifacts: ops_dashboard_forecast.ForecastMapComparisonArtifacts) -> None:
     ops_dashboard_map.render_map_component(
-        map_artifacts,
+        map_artifacts.map_artifacts,
         height=520,
         use_container_width=True,
     )
+
+    if map_artifacts.corrected is None:
+        st.markdown(map_artifacts.original.legend_html, unsafe_allow_html=True)
+        return
+
+    original_col, corrected_col = st.columns(2)
+    with original_col:
+        st.caption("Original")
+        st.markdown(map_artifacts.original.legend_html, unsafe_allow_html=True)
+    with corrected_col:
+        st.caption("Corrigido")
+        st.markdown(map_artifacts.corrected.legend_html, unsafe_allow_html=True)
 
 
 def build_forecast_instruction_from_request(
@@ -727,6 +742,12 @@ def resolve_default_forecast_window(
 
 
 def render_forecast_tab() -> None:
+    reason_nonce = int(st.session_state.get("forecast_reason_nonce", 0))
+    if st.session_state.pop("forecast_clear_reason", False):
+        st.session_state.pop(f"forecast_draft_reason__{reason_nonce}", None)
+        reason_nonce += 1
+        st.session_state["forecast_reason_nonce"] = reason_nonce
+
     assets_df = get_forecast_assets()
     st.subheader("Chuva prevista ECMWF")
     st.caption(
@@ -866,12 +887,12 @@ def render_forecast_tab() -> None:
         )
 
     st.markdown("**Persistencia da correcao**")
-    save_message: str | None = None
+    save_message = st.session_state.pop("forecast_save_message", None)
     with st.form("forecast_save_form"):
         save_left, save_right = st.columns([0.65, 0.35])
         with save_left:
             editor = st.text_input("Editor", key="forecast_draft_editor")
-            reason = st.text_input("Motivo da correcao", key="forecast_draft_reason")
+            reason = st.text_input("Motivo da correcao", key=f"forecast_draft_reason__{reason_nonce}")
         with save_right:
             st.caption("Persistencia")
             save_clicked = st.form_submit_button(
@@ -901,8 +922,9 @@ def render_forecast_tab() -> None:
                     metadata={"mode_label": preview.mode_label, "relative_path": preview.relative_path},
                 )
             clear_saved_forecast_edits_cache(selected_asset_id)
-            st.session_state["forecast_draft_reason"] = ""
-            save_message = "Instrucao de correcao ECMWF salva no history.sqlite."
+            st.session_state["forecast_save_message"] = "Instrucao de correcao ECMWF salva no history.sqlite."
+            st.session_state["forecast_clear_reason"] = True
+            st.rerun()
 
     if save_message:
         st.success(save_message)

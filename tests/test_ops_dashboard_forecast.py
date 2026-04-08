@@ -105,6 +105,7 @@ def test_build_forecast_map_returns_single_map_with_raster_inspector(monkeypatch
     child_names = {child._name for child in fmap._children.values()}
     assert isinstance(fmap, folium.Map)
     assert "RasterClickPopup" in child_names
+    assert "LayerControl" not in child_names
 
 
 def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> None:
@@ -117,3 +118,22 @@ def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> 
     assert isinstance(fmap, folium.plugins.DualMap)
     assert "RasterClickPopup" in {child._name for child in fmap.m1._children.values()}
     assert "RasterClickPopup" in {child._name for child in fmap.m2._children.values()}
+    assert "LayerControl" not in {child._name for child in fmap.m1._children.values()}
+    assert "LayerControl" not in {child._name for child in fmap.m2._children.values()}
+
+
+def test_build_forecast_map_artifacts_returns_external_legends(monkeypatch) -> None:
+    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda: None)
+    original = _preview("Mapa original")
+    corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
+
+    artifacts = ops_dashboard_forecast.build_forecast_map_artifacts(
+        original,
+        corrected_preview=corrected,
+        opacity=0.8,
+        component_key="forecast-test",
+    )
+
+    assert artifacts.corrected is not None
+    assert "Mapa original" in artifacts.original.legend_html
+    assert "Mapa corrigido" in artifacts.corrected.legend_html
