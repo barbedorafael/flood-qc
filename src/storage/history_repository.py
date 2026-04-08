@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 def build_observed_series_id(station_uid: int, variable_code: str, state: str = "raw") -> str:
@@ -13,9 +15,12 @@ def build_observed_series_id(station_uid: int, variable_code: str, state: str = 
 class HistoryRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
-        self.connection = sqlite3.connect(self.database_path)
+        self.connection = sqlite3.connect(self.database_path, timeout=5.0)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA busy_timeout = 5000")
+        self.connection.execute("PRAGMA journal_mode = WAL")
+        self.connection.execute("PRAGMA synchronous = NORMAL")
         self._validate_expected_schema()
 
     def __enter__(self) -> HistoryRepository:
@@ -27,49 +32,62 @@ class HistoryRepository:
     def close(self) -> None:
         self.connection.close()
 
-    def _validate_expected_schema(self) -> None:
-        asset_columns = {
+    def _require_exact_columns(self, table_name: str, expected_columns: set[str]) -> None:
+        found_columns = {
             row["name"]
-            for row in self.connection.execute("PRAGMA table_info(asset)").fetchall()
+            for row in self.connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
-        expected_asset_columns = {
-            "asset_id",
-            "asset_kind",
-            "format",
-            "relative_path",
-            "provider_code",
-            "checksum",
-            "valid_from",
-            "valid_to",
-            "metadata_json",
-            "created_at",
-        }
-        if asset_columns != expected_asset_columns:
+        if found_columns != expected_columns:
             raise RuntimeError(
-                "Banco historico incompatível com o schema atual de asset. "
-                f"Esperado {sorted(expected_asset_columns)}, encontrado {sorted(asset_columns)}. "
+                f"Banco historico incompativel com o schema atual de {table_name}. "
+                f"Esperado {sorted(expected_columns)}, encontrado {sorted(found_columns)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
             )
 
-        observed_series_columns = {
-            row["name"]
-            for row in self.connection.execute("PRAGMA table_info(observed_series)").fetchall()
-        }
-        expected_observed_series_columns = {
-            "series_id",
-            "station_uid",
-            "variable_code",
-            "state",
-            "created_at",
-        }
-        if observed_series_columns != expected_observed_series_columns:
-            raise RuntimeError(
-                "Banco historico incompatível com o schema atual de observed_series. "
-                f"Esperado {sorted(expected_observed_series_columns)}, encontrado {sorted(observed_series_columns)}. "
-                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
-                "para recriar o banco."
-            )
+    def _validate_expected_schema(self) -> None:
+        self._require_exact_columns(
+            "asset",
+            {
+                "asset_id",
+                "asset_kind",
+                "format",
+                "relative_path",
+                "provider_code",
+                "checksum",
+                "valid_from",
+                "valid_to",
+                "metadata_json",
+                "created_at",
+            },
+        )
+        self._require_exact_columns(
+            "observed_series",
+            {
+                "series_id",
+                "station_uid",
+                "variable_code",
+                "state",
+                "created_at",
+            },
+        )
+        self._require_exact_columns(
+            "manual_edit",
+            {
+                "manual_edit_id",
+                "asset_id",
+                "t0_step",
+                "t1_step",
+                "shift_lat",
+                "shift_lon",
+                "rotation_deg",
+                "multiplication_factor",
+                "editor",
+                "reason",
+                "metadata_json",
+                "created_at",
+            },
+        )
 
         variable_codes = {
             row["variable_code"]
@@ -78,7 +96,7 @@ class HistoryRepository:
         expected_variables = {"rain", "level", "flow"}
         if not expected_variables.issubset(variable_codes):
             raise RuntimeError(
-                "Banco historico incompatível com o catalogo atual de variaveis. "
+                "Banco historico incompativel com o catalogo atual de variaveis. "
                 f"Esperado pelo menos {sorted(expected_variables)}, encontrado {sorted(variable_codes)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
@@ -91,13 +109,13 @@ class HistoryRepository:
         expected_providers = {"ana", "inmet", "ecmwf"}
         if not expected_providers.issubset(provider_codes):
             raise RuntimeError(
-                "Banco historico incompatível com o catalogo atual de providers. "
+                "Banco historico incompativel com o catalogo atual de providers. "
                 f"Esperado pelo menos {sorted(expected_providers)}, encontrado {sorted(provider_codes)}. "
                 f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
                 "para recriar o banco."
             )
 
-    def get_provider_stations(self, provider_code: str) -> list[dict]:
+    def get_provider_stations(self, provider_code: str) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             """
             SELECT station_uid, station_code, station_name, provider_code
@@ -167,7 +185,7 @@ class HistoryRepository:
         self.connection.commit()
         return len(rows)
 
-    def get_asset_by_relative_path(self, relative_path: str) -> dict | None:
+    def get_asset_by_relative_path(self, relative_path: str) -> dict[str, Any] | None:
         row = self.connection.execute(
             """
             SELECT
@@ -190,6 +208,52 @@ class HistoryRepository:
             return None
         return dict(row)
 
+    def get_asset_by_id(self, asset_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+                created_at
+            FROM asset
+            WHERE asset_id = ?
+            """,
+            (asset_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def list_ecmwf_assets(self, *, asset_kind: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                asset_id,
+                asset_kind,
+                format,
+                relative_path,
+                provider_code,
+                checksum,
+                valid_from,
+                valid_to,
+                metadata_json,
+                created_at
+            FROM asset
+            WHERE provider_code = 'ecmwf'
+              AND asset_kind = ?
+            ORDER BY COALESCE(valid_from, created_at) DESC, created_at DESC
+            """,
+            (asset_kind,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_asset(
         self,
         *,
@@ -202,7 +266,7 @@ class HistoryRepository:
         valid_from: str | None = None,
         valid_to: str | None = None,
         metadata: dict | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         metadata_json = json.dumps(metadata or {}, sort_keys=True, ensure_ascii=True)
         self.connection.execute(
             """
@@ -245,7 +309,7 @@ class HistoryRepository:
             raise RuntimeError(f"Falha ao garantir asset relative_path={relative_path}.")
         return ensured_asset
 
-    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict | None:
+    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict[str, Any] | None:
         if isinstance(reference_time, datetime):
             reference_text = reference_time.isoformat(timespec="seconds")
         else:
@@ -278,3 +342,157 @@ class HistoryRepository:
         if row is None:
             return None
         return dict(row)
+
+    def _normalize_forecast_manual_edit_row(self, asset_id: str, row: dict[str, Any], row_number: int) -> dict[str, Any]:
+        if row.get("asset_id") not in (None, "", asset_id):
+            raise ValueError(f"Linha {row_number}: asset_id divergente do asset selecionado.")
+
+        try:
+            t0_step = int(row["t0_step"])
+            t1_step = int(row["t1_step"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Linha {row_number}: t0_step/t1_step invalidos.") from exc
+
+        if t1_step < t0_step:
+            raise ValueError(f"Linha {row_number}: t1_step deve ser >= t0_step.")
+
+        try:
+            shift_lat = float(row.get("shift_lat", 0.0))
+            shift_lon = float(row.get("shift_lon", 0.0))
+            rotation_deg = float(row.get("rotation_deg", 0.0))
+            multiplication_factor = float(row.get("multiplication_factor", 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Linha {row_number}: parametros numericos invalidos.") from exc
+
+        if multiplication_factor <= 0:
+            raise ValueError(f"Linha {row_number}: multiplication_factor deve ser > 0.")
+
+        reason = str(row.get("reason", "") or "").strip()
+        if not reason:
+            raise ValueError(f"Linha {row_number}: reason obrigatorio.")
+
+        editor_raw = row.get("editor")
+        if editor_raw is None:
+            editor = None
+        else:
+            editor = str(editor_raw).strip() or None
+
+        metadata_raw = row.get("metadata")
+        if metadata_raw is None and "metadata_json" in row:
+            metadata_json_raw = row.get("metadata_json")
+            if metadata_json_raw in (None, ""):
+                metadata_raw = {}
+            elif isinstance(metadata_json_raw, str):
+                try:
+                    metadata_raw = json.loads(metadata_json_raw)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Linha {row_number}: metadata_json invalido.") from exc
+            elif isinstance(metadata_json_raw, dict):
+                metadata_raw = metadata_json_raw
+            else:
+                raise ValueError(f"Linha {row_number}: metadata_json invalido.")
+        metadata = serialize_metadata_payload(metadata_raw)
+
+        return {
+            "asset_id": asset_id,
+            "t0_step": t0_step,
+            "t1_step": t1_step,
+            "shift_lat": shift_lat,
+            "shift_lon": shift_lon,
+            "rotation_deg": rotation_deg,
+            "multiplication_factor": multiplication_factor,
+            "editor": editor,
+            "reason": reason,
+            "metadata_json": json.dumps(metadata, sort_keys=True, ensure_ascii=True),
+        }
+
+    @staticmethod
+    def _ensure_no_forecast_overlap(rows: list[dict[str, Any]]) -> None:
+        ordered = sorted(rows, key=lambda item: (int(item["t0_step"]), int(item["t1_step"])))
+        for previous, current in zip(ordered, ordered[1:]):
+            if int(current["t0_step"]) < int(previous["t1_step"]):
+                raise ValueError(
+                    "Sobreposicao de correcoes no mesmo asset: "
+                    f"[{previous['t0_step']}, {previous['t1_step']}] x [{current['t0_step']}, {current['t1_step']}]."
+                )
+
+    def list_forecast_manual_edits(self, asset_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                manual_edit_id,
+                asset_id,
+                t0_step,
+                t1_step,
+                shift_lat,
+                shift_lon,
+                rotation_deg,
+                multiplication_factor,
+                editor,
+                reason,
+                metadata_json,
+                created_at
+            FROM manual_edit
+            WHERE asset_id = ?
+            ORDER BY t0_step, t1_step, manual_edit_id
+            """,
+            (asset_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def replace_forecast_manual_edits(self, asset_id: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if self.get_asset_by_id(asset_id) is None:
+            raise ValueError(f"Asset {asset_id!r} was not found in history.")
+
+        normalized_rows = [
+            self._normalize_forecast_manual_edit_row(asset_id, row, row_number=index + 1)
+            for index, row in enumerate(rows)
+        ]
+        self._ensure_no_forecast_overlap(normalized_rows)
+
+        with self.connection:
+            self.connection.execute("DELETE FROM manual_edit WHERE asset_id = ?", (asset_id,))
+            if normalized_rows:
+                self.connection.executemany(
+                    """
+                    INSERT INTO manual_edit (
+                        asset_id,
+                        t0_step,
+                        t1_step,
+                        shift_lat,
+                        shift_lon,
+                        rotation_deg,
+                        multiplication_factor,
+                        editor,
+                        reason,
+                        metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            row["asset_id"],
+                            row["t0_step"],
+                            row["t1_step"],
+                            row["shift_lat"],
+                            row["shift_lon"],
+                            row["rotation_deg"],
+                            row["multiplication_factor"],
+                            row["editor"],
+                            row["reason"],
+                            row["metadata_json"],
+                        )
+                        for row in normalized_rows
+                    ],
+                )
+
+        return self.list_forecast_manual_edits(asset_id)
+
+
+def serialize_metadata_payload(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, dict):
+        return value
+    raise TypeError(f"Unsupported metadata payload type: {type(value)!r}")

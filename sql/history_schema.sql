@@ -1,4 +1,6 @@
 PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
 
 CREATE TABLE IF NOT EXISTS provider (
     provider_code TEXT PRIMARY KEY,
@@ -69,15 +71,48 @@ CREATE TABLE IF NOT EXISTS qc_flag (
 
 CREATE TABLE IF NOT EXISTS manual_edit (
     manual_edit_id INTEGER PRIMARY KEY,
-    scope_type TEXT NOT NULL,
-    scope_key TEXT NOT NULL,
-    field_name TEXT NOT NULL,
-    old_value TEXT,
-    new_value TEXT,
+    asset_id TEXT NOT NULL REFERENCES asset(asset_id) ON DELETE CASCADE,
+    t0_step INTEGER NOT NULL,
+    t1_step INTEGER NOT NULL,
+    shift_lat REAL NOT NULL DEFAULT 0,
+    shift_lon REAL NOT NULL DEFAULT 0,
+    rotation_deg REAL NOT NULL DEFAULT 0,
+    multiplication_factor REAL NOT NULL DEFAULT 1 CHECK (multiplication_factor > 0),
     editor TEXT,
     reason TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    metadata_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (t1_step >= t0_step)
 );
+
+CREATE TRIGGER IF NOT EXISTS trg_manual_edit_no_overlap_insert
+BEFORE INSERT ON manual_edit
+FOR EACH ROW
+WHEN EXISTS (
+    SELECT 1
+    FROM manual_edit AS existing
+    WHERE existing.asset_id = NEW.asset_id
+      AND NEW.t0_step < existing.t1_step
+      AND NEW.t1_step > existing.t0_step
+)
+BEGIN
+    SELECT RAISE(ABORT, 'manual_edit overlap for asset_id');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_manual_edit_no_overlap_update
+BEFORE UPDATE ON manual_edit
+FOR EACH ROW
+WHEN EXISTS (
+    SELECT 1
+    FROM manual_edit AS existing
+    WHERE existing.asset_id = NEW.asset_id
+      AND existing.manual_edit_id <> NEW.manual_edit_id
+      AND NEW.t0_step < existing.t1_step
+      AND NEW.t1_step > existing.t0_step
+)
+BEGIN
+    SELECT RAISE(ABORT, 'manual_edit overlap for asset_id');
+END;
 
 CREATE TABLE IF NOT EXISTS run_catalog (
     run_id TEXT PRIMARY KEY,
@@ -93,6 +128,7 @@ CREATE TABLE IF NOT EXISTS run_catalog (
 CREATE INDEX IF NOT EXISTS idx_observed_series_station_var ON observed_series(station_uid, variable_code);
 CREATE INDEX IF NOT EXISTS idx_observed_value_observed_at ON observed_value(observed_at);
 CREATE INDEX IF NOT EXISTS idx_qc_flag_scope ON qc_flag(scope_type, scope_key);
+CREATE INDEX IF NOT EXISTS idx_manual_edit_asset_step ON manual_edit(asset_id, t0_step, t1_step, created_at);
 CREATE INDEX IF NOT EXISTS idx_run_catalog_status ON run_catalog(status);
 
 INSERT OR IGNORE INTO provider (provider_code, provider_name, provider_type) VALUES

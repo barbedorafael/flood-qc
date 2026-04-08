@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import sqlite3
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -23,13 +25,31 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from common.paths import history_db_path
-from reporting import ops_dashboard_data, ops_dashboard_map
+from qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
+from reporting import ops_dashboard_data, ops_dashboard_forecast, ops_dashboard_map
+from storage.history_repository import HistoryRepository
 
 
 DAYS_WINDOW = 30
 MGB_COLORS = {"q": "#1864ab", "y": "#0b7285"}
 NO_LAYER_OPTION = "(nenhum)"
 REFRESH_TS_FORMAT = "%d/%m/%Y %H:%M:%S"
+FORECAST_EDIT_COLUMNS = [
+    "manual_edit_id",
+    "asset_id",
+    "t0_step",
+    "t1_step",
+    "shift_lat",
+    "shift_lon",
+    "rotation_deg",
+    "multiplication_factor",
+    "editor",
+    "reason",
+    "metadata_json",
+    "created_at",
+    "remove",
+]
+FORECAST_EDIT_NUMERIC_COLUMNS = ["t0_step", "t1_step", "shift_lat", "shift_lon", "rotation_deg", "multiplication_factor"]
 
 
 st.set_page_config(
@@ -73,6 +93,68 @@ def get_rivers_geojson() -> dict | None:
     return ops_dashboard_data.load_rivers_layer_geojson()
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def get_forecast_assets() -> pd.DataFrame:
+    return ops_dashboard_forecast.list_forecast_assets()
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def get_forecast_steps(asset_id: str) -> pd.DataFrame:
+    return ops_dashboard_forecast.list_forecast_steps(asset_id)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def get_saved_forecast_edits(asset_id: str) -> pd.DataFrame:
+    with HistoryRepository(history_db_path()) as repository:
+        rows = repository.list_forecast_manual_edits(asset_id)
+    if not rows:
+        return pd.DataFrame(columns=FORECAST_EDIT_COLUMNS)
+    frame = pd.DataFrame(rows)
+    frame["remove"] = False
+    return frame
+
+
+@st.cache_data(show_spinner=False, max_entries=128)
+def get_forecast_preview(asset_id: str, t0_step: int, t1_step: int) -> ops_dashboard_forecast.ForecastPreview:
+    return ops_dashboard_forecast.build_forecast_preview(asset_id, t0_step=t0_step, t1_step=t1_step)
+
+
+@st.cache_resource(show_spinner=False, max_entries=128)
+def get_forecast_map_artifacts(
+    asset_id: str,
+    t0_step: int,
+    t1_step: int,
+    shift_lat: float,
+    shift_lon: float,
+    rotation_deg: float,
+    multiplication_factor: float,
+    opacity: float,
+) -> ops_dashboard_forecast.ForecastMapComparisonArtifacts:
+    request = ops_dashboard_forecast.ForecastPreviewRequest(
+        asset_id=asset_id,
+        t0_step=int(t0_step),
+        t1_step=int(t1_step),
+        shift_lat=float(shift_lat),
+        shift_lon=float(shift_lon),
+        rotation_deg=float(rotation_deg),
+        multiplication_factor=float(multiplication_factor),
+        opacity=float(opacity),
+    )
+    preview, corrected_preview = ops_dashboard_forecast.build_preview_pair_from_request(request)
+    component_key = (
+        f"forecast-map-{asset_id}-{int(t0_step)}-{int(t1_step)}-"
+        f"{round(float(shift_lat), 4)}-{round(float(shift_lon), 4)}-"
+        f"{round(float(rotation_deg), 4)}-{round(float(multiplication_factor), 4)}-"
+        f"{round(float(opacity), 4)}"
+    )
+    return ops_dashboard_forecast.build_forecast_map_artifacts(
+        preview,
+        corrected_preview=corrected_preview,
+        opacity=float(opacity),
+        component_key=component_key,
+    )
+
+
 @st.cache_resource
 def get_map_artifacts(
     map_cache_key: str,
@@ -96,6 +178,13 @@ def get_map_artifacts(
 def initialize_session_state() -> None:
     st.session_state.setdefault("mini_id", None)
     st.session_state.setdefault("last_refresh_at", None)
+    st.session_state.setdefault("forecast_applied_request", None)
+    st.session_state.setdefault("forecast_edit_asset_id", None)
+    st.session_state.setdefault("forecast_edit_draft", pd.DataFrame(columns=FORECAST_EDIT_COLUMNS))
+    st.session_state.setdefault("forecast_edit_message", None)
+    st.session_state.setdefault("forecast_edit_message_kind", "success")
+    st.session_state.setdefault("forecast_add_prefill_signature", None)
+    st.session_state.setdefault("forecast_last_editor", "")
 
 
 def trigger_manual_refresh() -> None:
@@ -103,6 +192,193 @@ def trigger_manual_refresh() -> None:
     st.cache_resource.clear()
     st.session_state["last_refresh_at"] = pd.Timestamp.now().strftime(REFRESH_TS_FORMAT)
     st.rerun()
+
+
+def clear_saved_forecast_edits_cache(asset_id: str) -> None:
+    try:
+        get_saved_forecast_edits.clear(asset_id)
+    except TypeError:
+        get_saved_forecast_edits.clear()
+
+
+def set_forecast_edit_message(message: str | None, *, kind: str = "success") -> None:
+    st.session_state["forecast_edit_message"] = message
+    st.session_state["forecast_edit_message_kind"] = kind
+
+
+def empty_forecast_edit_frame() -> pd.DataFrame:
+    frame = pd.DataFrame(columns=FORECAST_EDIT_COLUMNS)
+    return normalize_forecast_edit_frame(frame)
+
+
+def normalize_forecast_edit_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
+    normalized = pd.DataFrame() if frame is None else frame.copy()
+    for column in FORECAST_EDIT_COLUMNS:
+        if column not in normalized.columns:
+            normalized[column] = pd.NA
+
+    normalized["manual_edit_id"] = pd.to_numeric(normalized["manual_edit_id"], errors="coerce").astype("Int64")
+    for column in FORECAST_EDIT_NUMERIC_COLUMNS:
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized["asset_id"] = normalized["asset_id"].fillna("").astype(str)
+    normalized["editor"] = normalized["editor"].fillna("").astype(str)
+    normalized["reason"] = normalized["reason"].fillna("").astype(str)
+    normalized["metadata_json"] = normalized["metadata_json"].fillna("{}").astype(str)
+    normalized["created_at"] = normalized["created_at"].fillna("").astype(str)
+    normalized["remove"] = normalized["remove"].fillna(False).astype(bool)
+    return normalized[FORECAST_EDIT_COLUMNS]
+
+
+def load_forecast_edit_draft(asset_id: str) -> pd.DataFrame:
+    draft = get_saved_forecast_edits(asset_id)
+    if draft.empty:
+        return empty_forecast_edit_frame()
+    draft = draft.copy()
+    draft["asset_id"] = asset_id
+    draft["remove"] = False
+    return normalize_forecast_edit_frame(draft)
+
+
+def build_default_forecast_instruction(
+    asset_id: str,
+    default_window: tuple[int, int],
+    current_request: ops_dashboard_forecast.ForecastPreviewRequest | None,
+) -> ForecastCorrectionInstruction:
+    if current_request is not None and current_request.asset_id == asset_id:
+        return build_forecast_instruction_from_request(current_request)
+    return ForecastCorrectionInstruction(
+        asset_id=asset_id,
+        t0_step=int(default_window[0]),
+        t1_step=int(default_window[1]),
+        shift_lat=0.0,
+        shift_lon=0.0,
+        rotation_deg=0.0,
+        multiplication_factor=1.0,
+    )
+
+
+def sync_forecast_add_form_state(
+    *,
+    asset_id: str,
+    default_window: tuple[int, int],
+    current_request: ops_dashboard_forecast.ForecastPreviewRequest | None,
+) -> None:
+    instruction = build_default_forecast_instruction(asset_id, default_window, current_request)
+    signature = (
+        asset_id,
+        int(instruction.t0_step),
+        int(instruction.t1_step),
+        float(instruction.shift_lat),
+        float(instruction.shift_lon),
+        float(instruction.rotation_deg),
+        float(instruction.multiplication_factor),
+    )
+    if st.session_state.get("forecast_add_prefill_signature") == signature:
+        return
+
+    st.session_state["forecast_add_t0_step"] = int(instruction.t0_step)
+    st.session_state["forecast_add_t1_step"] = int(instruction.t1_step)
+    st.session_state["forecast_add_shift_lat"] = float(instruction.shift_lat)
+    st.session_state["forecast_add_shift_lon"] = float(instruction.shift_lon)
+    st.session_state["forecast_add_rotation_deg"] = float(instruction.rotation_deg)
+    st.session_state["forecast_add_multiplication_factor"] = float(instruction.multiplication_factor)
+    st.session_state["forecast_add_editor"] = str(st.session_state.get("forecast_last_editor", "") or "")
+    st.session_state["forecast_add_reason"] = ""
+    st.session_state["forecast_add_prefill_signature"] = signature
+
+
+def prepare_forecast_edit_workspace(asset_id: str) -> None:
+    if st.session_state.get("forecast_edit_asset_id") == asset_id:
+        return
+    st.session_state["forecast_edit_asset_id"] = asset_id
+    st.session_state["forecast_edit_draft"] = load_forecast_edit_draft(asset_id)
+    set_forecast_edit_message(None)
+
+
+def build_forecast_edit_row(
+    *,
+    asset_id: str,
+    t0_step: int,
+    t1_step: int,
+    shift_lat: float,
+    shift_lon: float,
+    rotation_deg: float,
+    multiplication_factor: float,
+    editor: str,
+    reason: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    return {
+        "manual_edit_id": pd.NA,
+        "asset_id": asset_id,
+        "t0_step": int(t0_step),
+        "t1_step": int(t1_step),
+        "shift_lat": float(shift_lat),
+        "shift_lon": float(shift_lon),
+        "rotation_deg": float(rotation_deg),
+        "multiplication_factor": float(multiplication_factor),
+        "editor": editor,
+        "reason": reason,
+        "metadata_json": json.dumps(metadata or {}, sort_keys=True, ensure_ascii=True),
+        "created_at": "",
+        "remove": False,
+    }
+
+
+def validate_forecast_edit_draft(asset_id: str, frame: pd.DataFrame) -> list[dict[str, Any]]:
+    normalized = normalize_forecast_edit_frame(frame)
+    active = normalized.loc[~normalized["remove"]].copy().reset_index(drop=True)
+    rows_to_persist: list[dict[str, Any]] = []
+
+    for row_index, row in enumerate(active.itertuples(index=False), start=1):
+        if pd.isna(row.t0_step) or pd.isna(row.t1_step):
+            raise ValueError(f"Linha {row_index}: t0_step e t1_step sao obrigatorios.")
+        if pd.isna(row.multiplication_factor):
+            raise ValueError(f"Linha {row_index}: multiplication_factor e obrigatorio.")
+
+        t0_step = int(row.t0_step)
+        t1_step = int(row.t1_step)
+        if t1_step < t0_step:
+            raise ValueError(f"Linha {row_index}: t1_step deve ser >= t0_step.")
+
+        multiplication_factor = float(row.multiplication_factor)
+        if multiplication_factor <= 0:
+            raise ValueError(f"Linha {row_index}: multiplication_factor deve ser > 0.")
+
+        reason = str(row.reason or "").strip()
+        if not reason:
+            raise ValueError(f"Linha {row_index}: motivo da correcao obrigatorio.")
+
+        metadata_json = str(row.metadata_json or "{}").strip() or "{}"
+        try:
+            metadata = json.loads(metadata_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Linha {row_index}: metadata_json invalido.") from exc
+
+        rows_to_persist.append(
+            {
+                "asset_id": asset_id,
+                "t0_step": t0_step,
+                "t1_step": t1_step,
+                "shift_lat": float(0.0 if pd.isna(row.shift_lat) else row.shift_lat),
+                "shift_lon": float(0.0 if pd.isna(row.shift_lon) else row.shift_lon),
+                "rotation_deg": float(0.0 if pd.isna(row.rotation_deg) else row.rotation_deg),
+                "multiplication_factor": multiplication_factor,
+                "editor": str(row.editor or "").strip() or None,
+                "reason": reason,
+                "metadata": metadata,
+            }
+        )
+
+    ordered = sorted(rows_to_persist, key=lambda item: (int(item["t0_step"]), int(item["t1_step"])))
+    for previous, current in zip(ordered, ordered[1:]):
+        if int(current["t0_step"]) < int(previous["t1_step"]):
+            raise ValueError(
+                "Sobreposicao de correcoes na grade: "
+                f"[{previous['t0_step']}, {previous['t1_step']}] x [{current['t0_step']}, {current['t1_step']}]."
+            )
+
+    return ordered
 
 
 def format_mm(value: float | int | None) -> str:
@@ -161,8 +437,8 @@ def render_header_and_summary(stations: pd.DataFrame) -> None:
 
     st.title("Sistema de alerta de cheias RS")
     st.caption(
-        "Explorer operacional para postos observados, raster de chuva acumulada e series do MGB. "
-        "Clique em um posto no mapa para dados observados ou em uma geometria de rio para dados do modelo."
+        "Explorer operacional para postos observados, raster de chuva acumulada, series do MGB e previsao ECMWF. "
+        "A aba ECMWF permite inspecao por passo e pre-visualizacao imediata de correcoes parametricas."
     )
 
     with st.container(border=True):
@@ -482,7 +758,6 @@ def render_sidebar_controls(
     raster_catalog: dict[str, dict[str, object]],
 ) -> tuple[Optional[str], float]:
     layer_options = [NO_LAYER_OPTION] + [str(item["name"]) for item in accumulation_rasters]
-    default_option = layer_options[1] if accumulation_rasters else NO_LAYER_OPTION
 
     with st.sidebar:
         st.subheader("Controles")
@@ -510,19 +785,13 @@ def render_sidebar_controls(
     return selected_layer_name, opacity
 
 
-def main() -> None:
-    initialize_session_state()
-
-    stations_df = get_station_catalog(DAYS_WINDOW)
-    rivers_geojson = get_rivers_geojson()
-    model_variables = get_model_variables()
-    accumulation_rasters = get_accumulation_rasters()
-    raster_catalog = {str(item["name"]): item for item in accumulation_rasters}
-
-    ensure_default_selection(stations_df)
-    render_header_and_summary(stations_df)
-    selected_layer_name, opacity = render_sidebar_controls(accumulation_rasters, raster_catalog)
-
+def render_monitoring_tab(
+    stations_df: pd.DataFrame,
+    rivers_geojson: dict | None,
+    model_variables: pd.DataFrame,
+    selected_layer_name: Optional[str],
+    opacity: float,
+) -> None:
     map_cache_key = compute_map_cache_key(selected_layer_name, opacity)
     map_warning: Optional[str] = None
     try:
@@ -612,6 +881,374 @@ def main() -> None:
                     days_window=DAYS_WINDOW,
                     height=320,
                 )
+
+
+@st.fragment
+def render_forecast_map_fragment(map_artifacts: ops_dashboard_forecast.ForecastMapComparisonArtifacts) -> None:
+    ops_dashboard_map.render_map_component(
+        map_artifacts.map_artifacts,
+        height=520,
+        use_container_width=True,
+    )
+
+    if map_artifacts.corrected is None:
+        st.markdown(map_artifacts.original.legend_html, unsafe_allow_html=True)
+        return
+
+    original_col, corrected_col = st.columns(2)
+    with original_col:
+        st.caption("Original")
+        st.markdown(map_artifacts.original.legend_html, unsafe_allow_html=True)
+    with corrected_col:
+        st.caption("Corrigido")
+        st.markdown(map_artifacts.corrected.legend_html, unsafe_allow_html=True)
+
+
+@st.fragment
+def render_forecast_corrections_fragment(
+    selected_asset_id: str,
+    default_window: tuple[int, int],
+    current_request: ops_dashboard_forecast.ForecastPreviewRequest | None,
+    preview_metadata_json: str,
+) -> None:
+    prepare_forecast_edit_workspace(selected_asset_id)
+    sync_forecast_add_form_state(
+        asset_id=selected_asset_id,
+        default_window=default_window,
+        current_request=current_request,
+    )
+
+    message = st.session_state.get("forecast_edit_message")
+    message_kind = str(st.session_state.get("forecast_edit_message_kind", "success"))
+    if message:
+        getattr(st, message_kind if message_kind in {"success", "warning", "error", "info"} else "info")(message)
+
+    st.caption("Edite as linhas abaixo, marque `remove` para excluir e use `Salvar alteracoes` para persistir o conjunto final.")
+    draft = normalize_forecast_edit_frame(st.session_state.get("forecast_edit_draft"))
+    edited_draft = st.data_editor(
+        draft,
+        key=f"forecast_edit_table__{selected_asset_id}",
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        column_order=[
+            "manual_edit_id",
+            "t0_step",
+            "t1_step",
+            "shift_lat",
+            "shift_lon",
+            "rotation_deg",
+            "multiplication_factor",
+            "editor",
+            "reason",
+            "created_at",
+            "remove",
+        ],
+        disabled=["manual_edit_id", "created_at"],
+        column_config={
+            "asset_id": None,
+            "metadata_json": None,
+            "manual_edit_id": st.column_config.NumberColumn("ID", format="%d", width="small"),
+            "t0_step": st.column_config.NumberColumn("t0_step", min_value=0, step=1, format="%d"),
+            "t1_step": st.column_config.NumberColumn("t1_step", min_value=0, step=1, format="%d"),
+            "shift_lat": st.column_config.NumberColumn("shift_lat", step=1.0, format="%.2f"),
+            "shift_lon": st.column_config.NumberColumn("shift_lon", step=1.0, format="%.2f"),
+            "rotation_deg": st.column_config.NumberColumn("rotation_deg", step=1.0, format="%.2f"),
+            "multiplication_factor": st.column_config.NumberColumn(
+                "multiplication_factor",
+                min_value=0.01,
+                step=0.05,
+                format="%.2f",
+            ),
+            "editor": st.column_config.TextColumn("Editor"),
+            "reason": st.column_config.TextColumn("Motivo da correcao", width="large"),
+            "created_at": st.column_config.TextColumn("created_at", width="medium"),
+            "remove": st.column_config.CheckboxColumn("remove"),
+        },
+    )
+    edited_draft = normalize_forecast_edit_frame(edited_draft)
+    edited_draft["asset_id"] = selected_asset_id
+    st.session_state["forecast_edit_draft"] = edited_draft
+
+    st.markdown("**Nova correcao**")
+    with st.form(f"forecast_add_form__{selected_asset_id}"):
+        add_left, add_right = st.columns([1.1, 0.9])
+        with add_left:
+            add_t0_step = st.number_input("t0_step", min_value=0, step=1, key="forecast_add_t0_step")
+            add_t1_step = st.number_input("t1_step", min_value=0, step=1, key="forecast_add_t1_step")
+            add_shift_lat = st.number_input("shift_lat", step=1.0, key="forecast_add_shift_lat")
+            add_shift_lon = st.number_input("shift_lon", step=1.0, key="forecast_add_shift_lon")
+        with add_right:
+            add_rotation_deg = st.number_input("rotation_deg", step=1.0, key="forecast_add_rotation_deg")
+            add_multiplication_factor = st.number_input(
+                "multiplication_factor",
+                min_value=0.01,
+                step=0.05,
+                key="forecast_add_multiplication_factor",
+            )
+            add_editor = st.text_input("Editor", key="forecast_add_editor")
+            add_reason = st.text_input("Motivo da correcao", key="forecast_add_reason")
+        add_clicked = st.form_submit_button("Adicionar correcao", use_container_width=True)
+
+    if add_clicked:
+        try:
+            if int(add_t1_step) < int(add_t0_step):
+                raise ValueError("Nova correcao: t1_step deve ser >= t0_step.")
+            if float(add_multiplication_factor) <= 0:
+                raise ValueError("Nova correcao: multiplication_factor deve ser > 0.")
+            preview_metadata = json.loads(preview_metadata_json or "{}")
+            new_row = build_forecast_edit_row(
+                asset_id=selected_asset_id,
+                t0_step=int(add_t0_step),
+                t1_step=int(add_t1_step),
+                shift_lat=float(add_shift_lat),
+                shift_lon=float(add_shift_lon),
+                rotation_deg=float(add_rotation_deg),
+                multiplication_factor=float(add_multiplication_factor),
+                editor=str(add_editor or "").strip(),
+                reason=str(add_reason or "").strip(),
+                metadata=preview_metadata if isinstance(preview_metadata, dict) else {},
+            )
+            next_draft = pd.concat([edited_draft, pd.DataFrame([new_row])], ignore_index=True)
+            st.session_state["forecast_edit_draft"] = normalize_forecast_edit_frame(next_draft)
+            st.session_state["forecast_last_editor"] = str(add_editor or "").strip()
+            set_forecast_edit_message("Correcao adicionada ao draft.", kind="success")
+            st.rerun(scope="fragment")
+        except ValueError as exc:
+            set_forecast_edit_message(str(exc), kind="warning")
+            st.rerun(scope="fragment")
+
+    save_col, info_col = st.columns([0.35, 0.65], vertical_alignment="center")
+    with save_col:
+        save_clicked = st.button("Salvar alteracoes", use_container_width=True, type="primary")
+    with info_col:
+        st.caption("O save substitui todas as correcoes do asset atual em uma unica transacao curta.")
+
+    if save_clicked:
+        try:
+            rows_to_persist = validate_forecast_edit_draft(selected_asset_id, edited_draft)
+            with HistoryRepository(history_db_path()) as repository:
+                persisted_rows = repository.replace_forecast_manual_edits(selected_asset_id, rows_to_persist)
+            clear_saved_forecast_edits_cache(selected_asset_id)
+            st.session_state["forecast_edit_draft"] = normalize_forecast_edit_frame(pd.DataFrame(persisted_rows))
+            st.session_state["forecast_edit_draft"]["asset_id"] = selected_asset_id
+            if rows_to_persist:
+                last_editor = rows_to_persist[-1].get("editor")
+                if last_editor:
+                    st.session_state["forecast_last_editor"] = str(last_editor)
+            set_forecast_edit_message("Correcoes persistidas no history.sqlite.", kind="success")
+            st.rerun(scope="fragment")
+        except ValueError as exc:
+            set_forecast_edit_message(str(exc), kind="warning")
+            st.rerun(scope="fragment")
+        except sqlite3.IntegrityError as exc:
+            set_forecast_edit_message(f"Conflito no banco: {exc}", kind="error")
+            st.rerun(scope="fragment")
+
+
+def build_forecast_instruction_from_request(
+    request: ops_dashboard_forecast.ForecastPreviewRequest,
+) -> ForecastCorrectionInstruction:
+    return ForecastCorrectionInstruction(
+        asset_id=request.asset_id,
+        t0_step=int(request.t0_step),
+        t1_step=int(request.t1_step),
+        shift_lat=float(request.shift_lat),
+        shift_lon=float(request.shift_lon),
+        rotation_deg=float(request.rotation_deg),
+        multiplication_factor=float(request.multiplication_factor),
+    )
+
+
+def resolve_default_forecast_window(
+    step_options: list[int],
+    applied_request: ops_dashboard_forecast.ForecastPreviewRequest | None,
+    asset_id: str,
+) -> tuple[int, int]:
+    if applied_request is not None and applied_request.asset_id == asset_id:
+        candidate = (int(applied_request.t0_step), int(applied_request.t1_step))
+        if candidate[0] in step_options and candidate[1] in step_options and candidate[0] <= candidate[1]:
+            return candidate
+    return int(step_options[0]), int(step_options[-1])
+
+
+def render_forecast_tab() -> None:
+    assets_df = get_forecast_assets()
+    st.subheader("Chuva prevista ECMWF")
+    st.caption(
+        "Selecione um ciclo ECMWF canonico, ajuste a janela temporal e os parametros de correcao, "
+        "e clique em Carregar mapas para atualizar o preview sincronizado."
+    )
+    if assets_df.empty:
+        st.info("Nenhum asset ECMWF canonicamente registrado foi encontrado em data/history.sqlite.")
+        return
+
+    asset_options = assets_df["asset_id"].tolist()
+    asset_lookup = dict(zip(assets_df["asset_id"], assets_df["display_label"]))
+    selected_asset_id = st.selectbox(
+        "Ciclo ECMWF",
+        options=asset_options,
+        format_func=lambda asset_id: asset_lookup.get(asset_id, asset_id),
+        key="forecast_asset_id",
+    )
+
+    steps_df = get_forecast_steps(selected_asset_id)
+    if steps_df.empty:
+        st.warning("O asset selecionado nao possui mensagens de forecast legiveis.")
+        return
+
+    step_options = steps_df["step_hours"].astype(int).tolist()
+    step_labels = {int(row.step_hours): str(row.label) for row in steps_df.itertuples()}
+    applied_request = st.session_state.get("forecast_applied_request")
+    if not isinstance(applied_request, ops_dashboard_forecast.ForecastPreviewRequest):
+        applied_request = None
+    default_window = resolve_default_forecast_window(step_options, applied_request, selected_asset_id)
+
+    with st.form("forecast_preview_form"):
+        controls_left, controls_right = st.columns([1.15, 0.85])
+        with controls_left:
+            st.markdown("**Parametros do preview**")
+            selected_window = st.select_slider(
+                "Janela temporal",
+                options=step_options,
+                value=default_window,
+                format_func=lambda step: step_labels.get(int(step), str(step)),
+                key=f"forecast_draft_step_window__{selected_asset_id}",
+            )
+            shift_lat = st.number_input("shift_lat (pixels)", value=0.0, step=1.0, key="forecast_draft_shift_lat")
+            shift_lon = st.number_input("shift_lon (pixels)", value=0.0, step=1.0, key="forecast_draft_shift_lon")
+            rotation_deg = st.number_input("rotation_deg", value=0.0, step=1.0, key="forecast_draft_rotation_deg")
+            multiplication_factor = st.number_input(
+                "multiplication_factor",
+                min_value=0.01,
+                value=1.0,
+                step=0.05,
+                key="forecast_draft_multiplication_factor",
+            )
+            opacity = st.slider(
+                "Transparencia do mapa",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.75,
+                step=0.05,
+                key="forecast_draft_opacity",
+            )
+        with controls_right:
+            st.markdown("**Passos disponiveis**")
+            st.dataframe(
+                steps_df[["step_hours", "valid_time"]].rename(
+                    columns={"step_hours": "t", "valid_time": "valid_time_local"}
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+        load_preview = st.form_submit_button("Carregar mapas", use_container_width=True)
+
+    if load_preview:
+        st.session_state["forecast_applied_request"] = ops_dashboard_forecast.ForecastPreviewRequest(
+            asset_id=selected_asset_id,
+            t0_step=int(selected_window[0]),
+            t1_step=int(selected_window[1]),
+            shift_lat=float(shift_lat),
+            shift_lon=float(shift_lon),
+            rotation_deg=float(rotation_deg),
+            multiplication_factor=float(multiplication_factor),
+            opacity=float(opacity),
+        )
+        applied_request = st.session_state["forecast_applied_request"]
+
+    current_request = applied_request if applied_request is not None and applied_request.asset_id == selected_asset_id else None
+    preview: ops_dashboard_forecast.ForecastPreview | None = None
+
+    if current_request is None:
+        st.info("Ajuste os parametros e clique em `Carregar mapas` para montar o preview deste ciclo ECMWF.")
+    else:
+        preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
+        map_artifacts = get_forecast_map_artifacts(
+            current_request.asset_id,
+            int(current_request.t0_step),
+            int(current_request.t1_step),
+            float(current_request.shift_lat),
+            float(current_request.shift_lon),
+            float(current_request.rotation_deg),
+            float(current_request.multiplication_factor),
+            float(current_request.opacity),
+        )
+
+        selected_steps = [int(current_request.t0_step), int(current_request.t1_step)]
+        selected_rows = steps_df.loc[steps_df["step_hours"].isin(selected_steps), ["step_hours", "valid_time"]].rename(
+            columns={"step_hours": "t", "valid_time": "valid_time_local"}
+        )
+        with st.container(border=True):
+            st.markdown("**Janela carregada**")
+            st.caption(preview.title)
+            st.dataframe(selected_rows, hide_index=True, use_container_width=True)
+
+        with st.container(border=True):
+            if current_request.has_correction:
+                st.caption("Mapa original e corrigido sincronizados. Clique no raster para inspecionar os valores.")
+            else:
+                st.caption("Mapa do forecast. Clique no raster para inspecionar os valores.")
+            render_forecast_map_fragment(map_artifacts)
+
+        instruction = build_forecast_instruction_from_request(current_request)
+        st.markdown("**Instrucao carregada**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "asset_id": instruction.asset_id,
+                        "t0_step": instruction.t0_step,
+                        "t1_step": instruction.t1_step,
+                        "shift_lat": instruction.shift_lat,
+                        "shift_lon": instruction.shift_lon,
+                        "rotation_deg": instruction.rotation_deg,
+                        "multiplication_factor": instruction.multiplication_factor,
+                    }
+                ]
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.markdown("**Correcoes ECMWF**")
+    preview_metadata_json = json.dumps(
+        {"mode_label": preview.mode_label, "relative_path": preview.relative_path} if preview is not None else {},
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    render_forecast_corrections_fragment(
+        selected_asset_id,
+        default_window,
+        current_request,
+        preview_metadata_json,
+    )
+
+
+def main() -> None:
+    initialize_session_state()
+
+    stations_df = get_station_catalog(DAYS_WINDOW)
+    rivers_geojson = get_rivers_geojson()
+    model_variables = get_model_variables()
+    accumulation_rasters = get_accumulation_rasters()
+    raster_catalog = {str(item["name"]): item for item in accumulation_rasters}
+
+    ensure_default_selection(stations_df)
+    render_header_and_summary(stations_df)
+    selected_layer_name, opacity = render_sidebar_controls(accumulation_rasters, raster_catalog)
+
+    monitoring_tab, forecast_tab = st.tabs(["Monitoramento", "Chuva Prevista ECMWF"])
+    with monitoring_tab:
+        render_monitoring_tab(
+            stations_df,
+            rivers_geojson,
+            model_variables,
+            selected_layer_name,
+            opacity,
+        )
+    with forecast_tab:
+        render_forecast_tab()
 
 
 if __name__ == "__main__":

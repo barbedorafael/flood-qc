@@ -31,6 +31,8 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     schema_sql = schema_path.read_text(encoding="utf-8")
     with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
         connection.executescript(schema_sql)
         connection.commit()
 
