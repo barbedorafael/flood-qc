@@ -347,10 +347,10 @@ def iter_value_rows(
     mini_ids: list[int],
     series_ids_by_mini: dict[int, str],
 ):
-    for column_index, dt_value in enumerate(dt_values):
-        column = values_chunk[:, column_index]
-        for row_index, mini_id in enumerate(mini_ids):
-            raw_value = float(column[row_index])
+    for row_index, dt_value in enumerate(dt_values):
+        row = values_chunk[row_index, :]
+        for column_index, mini_id in enumerate(mini_ids):
+            raw_value = float(row[column_index])
             value = raw_value if np.isfinite(raw_value) else None
             yield (series_ids_by_mini[mini_id], dt_value, value)
 
@@ -470,7 +470,7 @@ def write_output_database(
                 logger.info("series_skip variable=%s reason=no_overlap", spec.variable_code)
                 continue
 
-            matrix = np.memmap(source.path, dtype=np.float32, mode="r", shape=(len(mini_ids), source.nt_total))
+            matrix = np.memmap(source.path, dtype=np.float32, mode="r", shape=(source.nt_total, len(mini_ids)))
             logger.info(
                 "series_start variable=%s local_start=%s local_end=%s source_nt=%s",
                 spec.variable_code,
@@ -482,7 +482,7 @@ def write_output_database(
             try:
                 for chunk_start in range(overlap_start, overlap_end, chunk_hours):
                     chunk_end = min(chunk_start + chunk_hours, overlap_end)
-                    values_chunk = np.asarray(matrix[:, chunk_start:chunk_end], dtype=np.float32)
+                    values_chunk = np.asarray(matrix[chunk_start:chunk_end, :], dtype=np.float32)
 
                     sim_chunk_end = min(chunk_end, nt_current)
                     if chunk_start < sim_chunk_end:
@@ -493,7 +493,7 @@ def write_output_database(
                         connection.executemany(
                             "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
                             iter_value_rows(
-                                values_chunk[:, : sim_chunk_end - chunk_start],
+                                values_chunk[: sim_chunk_end - chunk_start, :],
                                 dt_values=sim_dt_values,
                                 mini_ids=mini_ids,
                                 series_ids_by_mini=series_lookup[(spec.variable_code, 0)],
@@ -522,7 +522,7 @@ def write_output_database(
                         connection.executemany(
                             "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
                             iter_value_rows(
-                                values_chunk[:, forecast_slice_start:],
+                                values_chunk[forecast_slice_start:, :],
                                 dt_values=forecast_dt_values,
                                 mini_ids=mini_ids,
                                 series_ids_by_mini=series_lookup[(spec.variable_code, 1)],

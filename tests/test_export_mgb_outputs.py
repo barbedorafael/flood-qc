@@ -81,8 +81,8 @@ def build_dataset(
     write_parhig(input_dir / "PARHIG.hig", start_time=start_time, nc=nc)
     write_mini(input_dir / "MINI.gtp", mini_values)
 
-    q_values = np.arange(nc * total_nt, dtype=np.float32).reshape(nc, total_nt)
-    y_values = (200000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(nc, y_total_nt)
+    q_values = np.arange(nc * total_nt, dtype=np.float32).reshape(total_nt, nc)
+    y_values = (200000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(y_total_nt, nc)
 
     write_output(output_dir / "QTUDO_Inercial_Atual.MGB", q_values)
     write_output(output_dir / "YTUDO.MGB", y_values)
@@ -203,8 +203,8 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
             "WHERE s.series_id = '0101.q.for' "
             "ORDER BY v.dt LIMIT 1"
         ).fetchone()[0]
-        assert current_first_value == 216.0
-        assert forecast_first_value == 960.0
+        assert current_first_value == 432.0
+        assert forecast_first_value == 1920.0
 
 
 def test_export_mgb_outputs_resolves_date_only_reference_time(tmp_path, monkeypatch) -> None:

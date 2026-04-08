@@ -481,9 +481,9 @@ def load_mgb_series(
         nt_total=nt_total,
     )
 
-    matrix = np.memmap(output_path, dtype=np.float32, mode="r", shape=(nc, nt_total))
+    matrix = np.memmap(output_path, dtype=np.float32, mode="r", shape=(nt_total, nc))
     try:
-        values = np.asarray(matrix[row_index, :], dtype=np.float32)
+        values = np.asarray(matrix[:, row_index], dtype=np.float32)
     finally:
         del matrix
 
