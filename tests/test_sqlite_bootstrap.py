@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from storage.db_bootstrap import initialize_history_db, initialize_run_db
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,12 @@ def _list_columns(database_path, table_name: str) -> set[str]:
     with sqlite3.connect(database_path) as connection:
         rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     return {row[1] for row in rows}
+
+
+def _list_triggers(database_path) -> set[str]:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()
+    return {row[0] for row in rows}
 
 
 def test_initialize_history_db(tmp_path) -> None:
@@ -77,7 +85,6 @@ def test_initialize_history_db(tmp_path) -> None:
     assert {
         "manual_edit_id",
         "asset_id",
-        "edit_kind",
         "t0_step",
         "t1_step",
         "shift_lat",
@@ -89,6 +96,55 @@ def test_initialize_history_db(tmp_path) -> None:
         "metadata_json",
         "created_at",
     }.issubset(manual_edit_columns)
+    assert "edit_kind" not in manual_edit_columns
+    triggers = _list_triggers(db_path)
+    assert {"trg_manual_edit_no_overlap_insert", "trg_manual_edit_no_overlap_update"}.issubset(triggers)
+
+
+def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO asset (
+                asset_id, asset_kind, format, relative_path, provider_code
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "ecmwf.ifs.fc.20260311T000000Z.rsbuf",
+                "forecast_grib_rs_buffered",
+                "GRIB2",
+                "data/interim/ecmwf/fc_2026-03-11_00_IFS_rsbuf.grib2",
+                "ecmwf",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO manual_edit (
+                asset_id, t0_step, t1_step, shift_lat, shift_lon, rotation_deg, multiplication_factor, reason, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("ecmwf.ifs.fc.20260311T000000Z.rsbuf", 0, 24, 0.0, 0.0, 0.0, 1.0, "primeira", "{}"),
+        )
+        connection.execute(
+            """
+            INSERT INTO manual_edit (
+                asset_id, t0_step, t1_step, shift_lat, shift_lon, rotation_deg, multiplication_factor, reason, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("ecmwf.ifs.fc.20260311T000000Z.rsbuf", 24, 48, 0.0, 0.0, 0.0, 1.0, "encostada", "{}"),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="manual_edit overlap"):
+            connection.execute(
+                """
+                INSERT INTO manual_edit (
+                    asset_id, t0_step, t1_step, shift_lat, shift_lon, rotation_deg, multiplication_factor, reason, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("ecmwf.ifs.fc.20260311T000000Z.rsbuf", 12, 36, 0.0, 0.0, 0.0, 1.0, "sobreposta", "{}"),
+            )
 
 
 def test_history_station_inventory_csv_loads(tmp_path) -> None:
