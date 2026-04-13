@@ -2,67 +2,87 @@
 
 ## Visao geral
 
-A arquitetura desta base e monorepo, local-first e orientada por arquivos. O sistema assume uma maquina Windows operada remotamente pela equipe, sem dependencia de backend central para o fluxo principal.
+A base e local-first, orientada por arquivos e organizada em torno de artefatos reproduziveis em disco. O fluxo principal hoje depende de:
 
-Os componentes sao:
+- `data/history.sqlite` como banco historico persistente;
+- `apps/mgb_runner/Input` e `apps/mgb_runner/Output` como espelho local do runner do MGB;
+- `data/interim/` para artefatos coletados ou intermediarios;
+- `apps/ops_dashboard/app.py` como interface operacional principal.
 
-- `apps/ops_dashboard`: interface operacional principal em Streamlit.
-- `apps/mgb_runner`: artefatos locais do MGB (`Input`, `Output`, `.exe`).
-- `apps/qgis_project`: convencoes para consumo espacial complementar.
-- `src/`: logica por dominio, separada entre ingestao, QC, modelo, storage e reporting.
-- `sql/`: schemas explicitos de SQLite.
+Os componentes seguem separados por dominio:
+
+- `src/ingest/`: coleta e registro de observados e forecast;
+- `src/model/`: preparacao de insumos e execucao do MGB;
+- `src/storage/`: bootstrap e contratos SQLite;
+- `src/reporting/`: suporte ao dashboard e produtos de consulta;
+- `src/qc/`: regras de QC e revisao, ainda incompletas nesta fase.
+
+## Estado atual implementado
+
+Hoje o repositorio ja entrega:
+
+- bootstrap do historico e do schema de run;
+- ingest operacional de observados ANA;
+- ingest de grade ECMWF, recorte espacial e registro do GRIB no historico;
+- preparacao da chuva horaria para o MGB a partir de observados e forecast ECMWF;
+- execucao real ou dry-run do runner MGB via `src/model/run_mgb.py`;
+- dashboard Streamlit para observados, series MGB e preview/correcao manual de forecast ECMWF.
+
+Ainda nao entrega ponta a ponta:
+
+- ingest operacional de INMET;
+- QC automatico de observados;
+- correcao manual de chuva observada;
+- montagem completa de runs em `data/runs/<run_id>.sqlite`;
+- relatorios operacionais.
 
 ## Decisoes arquiteturais
 
-### SQLite simples
+### SQLite como baseline
 
-Foi adotado SQLite simples como baseline para reduzir dependencia operacional, facilitar backup/copias e manter o sistema auditavel em maquina local. O desenho preserva a possibilidade de evoluir para SpatiaLite depois, mas sem acoplar a primeira versao a uma stack espacial mais pesada.
+SQLite e o baseline operacional para reduzir dependencia externa, manter backup simples e preservar auditabilidade local. O historico e o schema de run ficam explicitos em SQL.
 
-### Banco historico + banco por run
+### Historico + run por arquivo
 
-O historico persistente fica em `data/history.sqlite` e concentra metadados, observados, flags, edicoes, assets externos e catalogo de runs. Cada run possui seu proprio arquivo em `data/runs/<run_id>.sqlite`, contendo copia dos inputs usados, derivados operacionais, subset operacional dos outputs do modelo, assets e relatorios associados.
+O contrato continua sendo:
+
+- `data/history.sqlite` para historico persistente;
+- `data/runs/<run_id>.sqlite` para contexto fechado de um run.
+
+O bootstrap desse modelo esta implementado. A materializacao operacional completa do run ainda nao esta fechada.
 
 ### Observados em formato long
 
-O historico padroniza observados em formato long, com uma serie por variavel e uma tabela de valores temporais. Isso reduz ambiguidade entre providers, facilita QC, aprovacao e extensao para novas variaveis meteorologicas.
+Observados entram em formato long, com uma serie por combinacao relevante de estacao, variavel e estado. Esse desenho ja esta em uso no historico e no dashboard.
 
-### Rasters e vetores fora do banco
+### Assets externos fora do banco
 
-Rasters e vetores nao entram como blob em SQLite. O banco guarda apenas metadados e paths relativos. Isso simplifica o consumo por QGIS, evita inflar os bancos e deixa os artefatos mais portaveis.
-
-### Setup espacial do MGB fora dos bancos
-
-O cadastro espacial completo do MGB fica em um GPKG externo em `data/spatial/`. O banco do run guarda apenas a referencia a esse setup, suficiente para ligar celulas e outputs do modelo sem normalizar geometrias em SQLite.
-
-### Artefato completo de outputs fora do run
-
-O output completo do MGB nao precisa morar dentro do banco do run. O contrato operacional passa a considerar os binarios canonicos do runner (`QTUDO_Inercial_Atual.MGB` e `YTUDO.MGB`) como artefatos completos de output para visualizacao e triagem. O run materializa apenas o subset operacional efetivamente usado no ciclo do dia ou em uma derivacao manual.
+Rasters, vetores e binarios MGB permanecem fora do SQLite. O banco guarda metadados e paths relativos. Isso vale tanto para GRIB ECMWF quanto para outputs completos do MGB.
 
 ### Streamlit como UI principal
 
-O Streamlit foi escolhido para ser a interface operacional principal porque permite navegar rapidamente por runs, revisar flags, sumarizar resultados e centralizar a triagem sem introduzir backend web adicional.
+O Streamlit segue como interface principal para triagem operacional. Hoje ele consome diretamente:
 
-### QGIS como ferramenta complementar
+- `data/history.sqlite`;
+- binarios MGB do runner;
+- rasters acumulados em `data/interim/`;
+- artefatos espaciais legados ainda usados pelo mapa.
 
-QGIS nao e o centro da arquitetura. Ele entra como cliente sobre GeoPackages e GeoTIFFs produzidos pelo pipeline, principalmente para inspecao espacial, comparacao visual e apoio a edicoes externas quando necessario.
+### QGIS como complementar
 
-### MGB isolado em um runner proprio
+QGIS continua como cliente complementar sobre artefatos gerados. O layout canonico reserva `data/spatial/` para camadas tratadas estaveis, embora essa consolidacao ainda esteja incompleta.
 
-O MGB e Windows-only e tem acoplamentos especificos de executavel, diretoria de trabalho e arquivos de entrada. Por isso a logica do runner fica em `src/model/`, enquanto os artefatos operacionais ficam em `apps/mgb_runner`, separados da logica de ingestao, QC e reporting.
+### Runner MGB isolado
 
-## Trade-offs
+O executavel e os artefatos do MGB permanecem isolados em `apps/mgb_runner`, enquanto a logica do runner e dos preparos fica em `src/model/`.
 
-- simplificar infraestrutura agora em vez de maximizar flexibilidade prematura.
-- arquivos SQLite e artefatos locais em vez de servicos centralizados.
-- artefato completo do MGB em binarios fora do run e subset operacional dentro do run para manter o fluxo mais enxuto e aderente ao uso real.
-- geometria e setup espacial do MGB fora dos bancos para evitar duplicacao e acoplamento espacial desnecessario.
+## Arquitetura alvo vs estado real
 
-## Fluxo entre historico, runs e outputs
+Algumas decisoes seguem como alvo canonico, mas ainda nao estao totalmente materializadas:
 
-1. A ingestao coleta dados externos e grava artefatos brutos em `data/interim/`.
-2. O QC automatico registra flags e promove os dados usados como insumo do modelo.
-3. O runner do MGB executa a simulacao com os arquivos de input preparados para o ciclo operacional.
-4. O output completo do modelo permanece nos binarios do runner e e lido diretamente pelo dashboard.
-5. Um run automatico e materializado em `data/runs/<run_id>.sqlite`, copiando os inputs usados, referenciando os assets relevantes e registrando apenas o subset operacional dos outputs.
-6. Quando houver intervencao humana, um run manual derivado e criado com `parent_run_id` apontando para o automatico.
-7. O historico recebe o catalogo do run e, quando apropriado, metadados de publicacao.
+- `data/spatial/` como local dos assets espaciais tratados;
+- `data/timeseries/` como local de series tratadas operacionais;
+- `data/runs/` como artefato efetivamente usado no ciclo operacional diario;
+- `.toml` como possivel formato futuro de config, ainda em avaliacao.
+
+Enquanto isso, o sistema ainda preserva e consome alguns artefatos legados, especialmente no dominio espacial.

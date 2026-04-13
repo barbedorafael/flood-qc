@@ -1,66 +1,37 @@
 ﻿# Sistema Operacional de Hidrologia e Previsao
 
-Base inicial para um sistema operacional de hidrologia e previsao orientado por artefatos locais, com foco em simplicidade, auditabilidade e crescimento incremental.
+Base operacional local-first para hidrologia, chuva e previsao no RS, orientada por artefatos locais, SQLite e scripts diretos em Python.
 
-## Objetivo
+## Estado atual
 
-Organizar o repositorio para suportar:
+O repositorio ja possui base funcional para:
 
-- coleta de dados observados e de previsao;
-- QC automatico e revisao manual;
-- montagem e execucao de runs hidrologicos;
-- armazenamento local de historico e de runs;
-- visualizacao operacional em Streamlit;
-- consumo espacial complementar em QGIS;
-- geracao de relatorios.
+- bootstrap de `data/history.sqlite` e `data/runs/<run_id>.sqlite`;
+- ingest de observados ANA para `rain`, `level` e `flow`;
+- ingest de grade ECMWF e registro do GRIB canonico no historico;
+- preparacao de metadados e chuva horaria para o MGB;
+- execucao real ou dry-run do runner do MGB;
+- dashboard Streamlit para monitoramento, series MGB e preview/correcao manual de forecast ECMWF.
 
-Nesta fase, o repositorio entrega estrutura, contratos, stubs, schemas SQL e documentacao. Integracoes externas, regras completas de QC, execucao real do MGB e UI final ainda nao estao implementadas.
+Ainda estao pendentes nesta fase:
 
-O inventario inicial de estacoes do historico e mantido em `data/interim/history_station_inventory.csv` e carregado automaticamente durante o bootstrap do banco historico, que calcula `station_uid` como `1000000000 + codigo` para ANA e `2000000000 + codigo` para INMET, convertendo letras do codigo para numeros (`A=1`, `B=2`, etc.).
+- ingest operacional de chuva do INMET;
+- QC automatico de observados;
+- correcao manual de chuva observada;
+- materializacao completa de runs operacionais em `data/runs/`;
+- geracao de relatorios operacionais.
 
-## Filosofia
+## Principios
 
 - artefatos locais primeiro;
+- SQLite como baseline operacional;
 - um banco historico persistente em `data/history.sqlite`;
 - um arquivo SQLite por run em `data/runs/`;
 - rasters e vetores fora do banco, com paths relativos e metadados;
 - Streamlit como interface principal;
 - QGIS como cliente complementar sobre artefatos gerados.
 
-## Componentes principais
-
-- `apps/ops_dashboard/`
-  Dashboard operacional em Streamlit, ainda em formato placeholder.
-- `apps/mgb_runner/`
-  Runner dedicado para o MGB Windows-only, com preparacao de comando e dry-run stubados.
-- `apps/qgis_project/`
-  Convencoes e instrucoes para abrir artefatos do pipeline no QGIS.
-- `src/`
-  Modulos por dominio, organizados em ingestao, QC, modelo, storage, reporting e utilitarios comuns.
-- `sql/`
-  Schemas explicitos de `history.sqlite` e `run.sqlite`.
-- `docs/`
-  Documentacao arquitetural, de modelo de dados, workflows e operacao.
-
-## Banco historico vs banco de run
-
-- `data/history.sqlite`
-  Guarda metadados de estacoes, series observadas, flags, edicoes e o catalogo dos runs.
-- `data/runs/<run_id>.sqlite`
-  Guarda o estado de um run especifico, lineage, inputs, outputs, flags, edicoes, assets e relatorios.
-
-Cada run manual gera um novo arquivo SQLite com referencia ao run automatico de origem. O run automatico nao e editado em lugar.
-
-## Papel do Streamlit, QGIS e MGB runner
-
-- `Streamlit`
-  Interface principal para triagem, revisao rapida, navegacao entre runs e sumarios.
-- `QGIS`
-  Ferramenta complementar para inspecao espacial de GeoPackages e GeoTIFFs produzidos pelo pipeline.
-- `MGB runner`
-  Camada isolada para preparar e futuramente executar o modelo Windows-only sem misturar esse acoplamento com o restante do sistema.
-
-## Estrutura do repositorio
+## Layout principal
 
 ```text
 .
@@ -87,25 +58,71 @@ Cada run manual gera um novo arquivo SQLite com referencia ao run automatico de 
 `-- tests/
 ```
 
-## Como comecar
+Importante: `data/spatial/`, `data/timeseries/` e `data/runs/` sao o layout alvo canonico. O repositorio ainda preserva artefatos legados fora dessa convencao.
 
-Crie um ambiente virtual e instale as dependencias minimas:
+## Runtime e configuracao
+
+- Contrato oficial de runtime: `Python >= 3.11`
+- Configuracao canonica nesta fase:
+  - `config/default.yaml`
+  - `config/custom.yaml`
+- A avaliacao de migracao da configuracao para `.toml` segue em aberto, sem mudanca de contrato por enquanto.
+
+O inventario inicial de estacoes fica em `data/interim/history_station_inventory.csv`. Durante o bootstrap do historico, o sistema calcula `station_uid` como `1000000000 + codigo` para ANA e `2000000000 + codigo` para INMET, convertendo letras do codigo para numeros (`A=1`, `B=2`, etc.).
+
+## Setup local
+
+Crie um ambiente virtual e instale as dependencias para uso completo local:
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[dev]
+source .venv/bin/activate
+pip install -e .[dev,data,geo,ui]
 ```
 
-O ingest novo usa somente `config/default.yaml` e `config/custom.yaml`. O script `python src/ingest/fetch_observed_ana.py` roda sem parametros e sempre le esses arquivos.
+No Windows PowerShell:
 
-Comandos iniciais uteis:
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .[dev,data,geo,ui]
+```
+
+## Entry points canonicos
 
 ```bash
 python src/storage/db_bootstrap.py --history
 python src/ingest/fetch_observed_ana.py
-python src/storage/db_bootstrap.py --run-id 20260310T120000
+python src/ingest/fetch_observed_inmet.py
+python src/ingest/forecast_grid.py
+python src/model/prepare_mgb_meta.py
+python src/model/prepare_mgb_rainfall.py
+python src/model/run_mgb.py --dry-run
 streamlit run apps/ops_dashboard/app.py
-python src/model/run_mgb.py --run-db data/runs/20260310T120000.sqlite --dry-run
-pytest
 ```
+
+Para rodar a ingestao INMET, defina `INMET_API_KEY` no ambiente ou preencha `.env` a partir de `.env.example`.
+
+## Componentes principais
+
+- `apps/ops_dashboard/`
+  Dashboard operacional em Streamlit para monitoramento, series observadas, series MGB e preview/correcao de forecast ECMWF.
+- `apps/mgb_runner/`
+  Artefatos locais do MGB (`Input`, `Output` e `.exe`). O codigo do runner fica em `src/model/`.
+- `apps/qgis_project/`
+  Material de apoio para consumo espacial complementar.
+- `src/`
+  Modulos por dominio, separados entre ingestao, QC, modelo, storage, reporting e utilitarios comuns.
+- `sql/`
+  Schemas explicitos de `history.sqlite` e `run.sqlite`.
+- `docs/`
+  Arquitetura, modelo de dados, operacao e workflows.
+
+## Banco historico vs banco de run
+
+- `data/history.sqlite`
+  Guarda metadados de estacoes, observados, flags, edicoes e catalogo de runs.
+- `data/runs/<run_id>.sqlite`
+  Guarda o estado fechado de um run especifico.
+
+O schema de run existe e o bootstrap esta implementado, mas a montagem operacional completa do run ainda nao esta concluida nesta fase.

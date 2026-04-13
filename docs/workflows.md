@@ -1,68 +1,90 @@
 # Workflows operacionais
 
-## Ingestao
+## Fluxo implementado hoje
 
-1. Coletar observados e previsoes de fontes externas.
-2. Gravar os arquivos brutos em `data/interim/`.
-3. Registrar o historico operacional da coleta em `logs/`.
-4. Materializar observados em `observed_series` e `observed_value` no formato long.
+### 1. Bootstrap do historico
 
-## QC automatico
+1. Inicializar `data/history.sqlite`.
+2. Carregar o inventario de estacoes em `station`.
+3. Garantir catalogos basicos de `provider` e `variable`.
 
-1. Aplicar regras por variavel e por serie.
-2. Registrar flags em `qc_flag` sem alterar o dado original.
-3. Promover dados entre `raw`, `curated` e `approved` conforme o processo.
-4. Liberar os insumos aprovados para a execucao automatica do modelo.
+### 2. Ingest de observados ANA
 
-## Execucao do modelo
+1. Ler `config/default.yaml` e `config/custom.yaml`.
+2. Buscar dados hidrometeorologicos por estacao e dia.
+3. Salvar XML bruto em `data/interim/ana/`.
+4. Persistir observados em `observed_series` e `observed_value`.
+5. Registrar logs em `logs/fetch_observed_ana/`.
 
-1. Preparar os arquivos de input necessarios para o MGB a partir dos insumos aprovados.
-2. Copiar `apps/mgb_runner/Input` para `C:/mgb-hora/Input`, recriar `C:/mgb-hora/Output` e executar o `.exe` local sem parametros.
-3. Espelhar `C:/mgb-hora/Output` de volta para `apps/mgb_runner/Output`.
-4. Usar diretamente os binarios `QTUDO_Inercial_Atual.MGB` e `YTUDO.MGB`, junto de `PARHIG.hig` e `MINI.gtp`, como base para visualizacao, triagem e selecao do subset operacional.
+### 2b. Ingest de chuva INMET
 
-## QC de outputs
+1. Ler `config/default.yaml` e `config/custom.yaml`.
+2. Ler a chave local em `INMET_API_KEY` ou em `.env`.
+3. Consultar a API operacional de chuva por estacao e dia.
+4. Salvar payload bruto em `data/interim/inmet/`.
+5. Persistir chuva em `observed_series` e `observed_value`.
+6. Registrar logs em `logs/fetch_observed_inmet/`.
 
-1. Validar coerencia minima dos resultados.
-2. Registrar flags e comparacoes com observados.
-3. Marcar outputs/celulas/series para composicao do run operacional.
+### 3. Ingest de forecast ECMWF
 
-## Montagem do run
+1. Resolver o ciclo a partir do `reference_time`.
+2. Baixar o GRIB do ECMWF.
+3. Recortar a grade para o bbox operacional.
+4. Registrar o asset canonico em `data/history.sqlite`.
+5. Registrar logs em `logs/forecast_grid/`.
 
-1. Criar um novo `data/runs/<run_id>.sqlite` para o run automatico ou derivado.
-2. Registrar o cabecalho em `run`, com `parent_run_id` quando houver derivacao.
-3. Copiar os inputs aprovados efetivamente usados para `run_input_series` e `run_input_value`.
-4. Registrar assets usados no run em `run_asset`, incluindo o artefato completo de output e outros arquivos auxiliares relevantes.
-5. Materializar no run apenas o subset operacional dos outputs do modelo em `mgb_output_series` e `mgb_output_value`.
-6. Registrar derivados operacionais em `derived_series` e `derived_value`.
+### 4. Preparacao do MGB
 
-## Revisao manual
+1. Reescrever `PARHIG.hig` a partir da configuracao atual.
+2. Carregar chuva observada do historico.
+3. Normalizar chuva para grade horaria e interpolar para as minis.
+4. Quando habilitado, incorporar a chuva horaria do ECMWF no bloco de forecast.
+5. Escrever `apps/mgb_runner/Input/chuvabin.hig`.
 
-1. Operador inspeciona flags, series e o subset do run apoiado pelo dashboard e pelos binarios completos do MGB.
-2. Ajustes sao registrados como `manual_edit` em um run derivado quando houver intervencao manual.
-3. Nenhum run automatico e editado em lugar.
+### 5. Execucao e consumo do modelo
 
-## Geracao de relatorio
+1. Preparar workspace do runner.
+2. Executar o binario do MGB ou rodar em dry-run.
+3. Espelhar o output de volta para `apps/mgb_runner/Output`.
+4. Ler binarios do MGB diretamente no dashboard para visualizacao.
 
-1. Consolidar sumarios e produtos do run.
-2. Registrar relatorios em `report_artifact`.
-3. Publicar referencias no `run_catalog` do historico quando aplicavel.
+### 6. Dashboard
 
-## Dia normal vs dia de evento
+1. Ler `data/history.sqlite` para cadastro e observados.
+2. Ler binarios MGB do runner para series de mini.
+3. Ler rasters acumulados em `data/interim/`.
+4. Permitir preview e persistencia de correcoes manuais de forecast ECMWF.
 
-### Dia normal
+## Fluxos ainda incompletos
 
-- run automatico diario;
-- pouca ou nenhuma intervencao manual;
-- foco em monitoramento e verificacao rapida.
+### QC automatico
 
-### Dia de evento
+O schema e os estados existem, mas o fluxo de:
 
-- mais de um run ao longo do dia;
-- criacao de runs manuais derivados;
-- maior uso do dashboard e do QGIS para triagem e comparacao.
+- gerar flags em `qc_flag`
+- promover `raw -> curated -> approved`
+- liberar automaticamente insumos aprovados
 
-## Run automatico vs run revisado
+ainda nao esta operacional.
 
-- run automatico: gerado apos QC automatico, execucao do modelo e materializacao do subset operacional do dia;
-- run revisado: novo arquivo SQLite derivado, com `parent_run_id` apontando para o automatico ja executado.
+### Run operacional materializado
+
+O schema de run existe, mas o fluxo que copia inputs, outputs, derivados, flags e lineage para `data/runs/<run_id>.sqlite` ainda nao esta fechado.
+
+### Revisao manual de observados
+
+Hoje existe correcao manual para forecast ECMWF no historico. A revisao manual de chuva observada ainda nao esta implementada.
+
+### Relatorios
+
+A geracao de `report_artifact` e a publicacao no `run_catalog` seguem pendentes.
+
+## Direcao arquitetural mantida
+
+Mesmo com lacunas na implementacao, a direcao canonica continua sendo:
+
+- historico persistente em SQLite;
+- um arquivo SQLite por run;
+- assets espaciais tratados em `data/spatial/`;
+- series tratadas em `data/timeseries/`;
+- configuracao atual em YAML, com `.toml` ainda em avaliacao.

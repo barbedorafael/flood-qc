@@ -1,131 +1,119 @@
 # Modelo conceitual de dados
 
-## Entidades principais
+## Estado atual
 
-### Historico (`data/history.sqlite`)
+O modelo canonico continua dividido entre:
 
-- `provider`: catalogo de origens como ANA, INMET e providers de grade.
-- `variable`: catalogo de variaveis e unidade padrao.
-- `station`: cadastro canonico unificado de estacoes, uma linha por `provider_code + station_code`.
-- `asset`: ponteiro generico para arquivos externos como CSVs, GRIB2, rasters e GPKGs.
-- `observed_series`: definicao canonica de uma serie observada tratada.
-- `observed_value`: valores temporais em formato long.
-- `qc_flag`: flags de qualidade sem sobrescrever o dado original.
-- `manual_edit`: trilha append-only de alteracoes.
-- `run_catalog`: indice de runs existentes/publicados.
+- historico persistente em `data/history.sqlite`;
+- run por arquivo em `data/runs/<run_id>.sqlite`.
 
-### Run (`data/runs/<run_id>.sqlite`)
+Hoje o historico esta em uso real por ANA, ECMWF, dashboard e correcoes manuais de forecast. O schema de run ja existe, mas sua materializacao operacional ainda nao esta completa.
 
-- `run`: cabecalho do run com `parent_run_id` quando derivado.
-- `run_input_series`: copia local das series usadas no run.
-- `run_input_value`: copia local dos valores usados no run.
-- `run_asset`: assets associados ao run, incluindo forecast original, editado e referencias ao artefato completo de output quando aplicavel.
-- `derived_series`: series derivadas dentro do run.
-- `derived_value`: valores derivados com suporte a janela temporal e horizonte.
-- `model_execution`: execucao do modelo e metadados do setup espacial externo.
-- `mgb_output_series`: subset operacional dos outputs do MGB por variavel, celula e `prev_flag`.
-- `mgb_output_value`: serie temporal do subset de outputs materializado no run.
-- `qc_flag`: flags locais ao run.
-- `manual_edit`: ajustes manuais locais ao run.
-- `report_artifact`: produtos e relatorios gerados a partir do run.
+## Entidades principais do historico
 
-## Separacao entre historico e execucao
+### `provider`
 
-### Historico
+Catalogo das origens operacionais, incluindo pelo menos `ana`, `inmet` e `ecmwf`.
 
-Guarda o estado consolidado e reusavel do sistema:
+### `variable`
 
-- cadastro unificado de estacoes;
-- inventario local consolidado por provider;
-- observados em formato long;
-- assets externos estaveis e arquivos brutos/originais quando fizer sentido para o dominio;
-- flags persistentes e trilha de edicao;
-- catalogo de runs.
+Catalogo das variaveis canonicas. Nesta fase, o historico trabalha com:
 
-### Run
+- `rain`
+- `level`
+- `flow`
 
-Guarda o contexto fechado de uma execucao especifica:
+### `station`
 
-- cabecalho do run e relacao com o run pai;
-- copia local dos inputs realmente usados;
-- assets ligados ao run;
-- produtos derivados operacionais;
-- referencia e contexto da execucao do modelo;
-- subset operacional dos outputs do MGB normalizado no proprio SQLite;
-- relatorios e flags locais.
+Cadastro operacional unificado das estacoes. A identidade logica continua sendo `provider_code + station_code`.
 
-### Artefato completo de outputs
+O inventario inicial vem de `data/interim/history_station_inventory.csv`. O bootstrap calcula `station_uid` por provider, incluindo codigos alfanumericos do INMET.
 
-O output completo do MGB fica fora do run nos binarios canonicos do proprio runner:
+### `observed_series`
+
+Define uma serie observada por combinacao de:
+
+- `station_uid`
+- `variable_code`
+- `state`
+
+Os estados canonicos continuam sendo:
+
+- `raw`
+- `curated`
+- `approved`
+
+No estado atual do repositorio, o historico em uso ainda esta predominantemente em `raw`.
+
+### `observed_value`
+
+Tabela temporal em formato long, com um valor por `series_id + observed_at`.
+
+### `asset`
+
+Registro generico de arquivos externos. Hoje ele ja e usado de forma operacional para assets ECMWF.
+
+### `qc_flag`
+
+Estrutura canonica para flags de qualidade sem sobrescrever o dado original. O schema esta implementado, mas o QC automatico ainda nao popula essa tabela de forma operacional.
+
+### `manual_edit`
+
+No historico atual, esta tabela esta sendo usada para correcoes manuais de forecast ECMWF por asset e janela temporal. Ainda nao existe contrato equivalente implementado para correcao manual de chuva observada.
+
+### `run_catalog`
+
+Indice de runs publicados ou disponiveis. O schema existe, mas o catalogo ainda nao esta sendo alimentado no fluxo atual.
+
+## Entidades principais do run
+
+O banco de run continua modelado para guardar:
+
+- cabecalho do run em `run`;
+- copia local de inputs em `run_input_series` e `run_input_value`;
+- assets do run em `run_asset`;
+- derivados operacionais em `derived_series` e `derived_value`;
+- execucao do modelo em `model_execution`;
+- subset operacional dos outputs do MGB em `mgb_output_series` e `mgb_output_value`;
+- flags, edicoes e relatorios locais.
+
+Esse contrato permanece valido, mas a camada de repositorio e montagem do run ainda esta incompleta nesta fase.
+
+## Separacao entre historico e outputs completos
+
+O output completo do MGB continua fora do SQLite, nos binarios canonicos do runner:
 
 - `apps/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
 - `apps/mgb_runner/Output/YTUDO.MGB`
 
-O dashboard le esses binarios diretamente, usando:
+O dashboard le esses binarios diretamente com apoio de:
 
-- `apps/mgb_runner/Input/PARHIG.hig` para `start_time`, `dt_seconds` e `NC`;
-- `apps/mgb_runner/Input/MINI.gtp` para mapear `mini_id` para a ordem das linhas;
-- `run.reference_time` para separar trecho atual e previsao.
+- `apps/mgb_runner/Input/PARHIG.hig`
+- `apps/mgb_runner/Input/MINI.gtp`
 
-## Convencoes de representacao
+Esse comportamento ja esta implementado e e o caminho operacional atual para visualizacao do modelo.
 
-### Estacoes
+## Assets espaciais e raster
 
-No schema novo:
+O contrato segue sendo:
 
-- `station` guarda uma linha por estacao operacional local;
-- `provider_code + station_code` formam a identidade logica da estacao;
-- `station_code` ANA permanece sem zero a esquerda no catalogo canonico.
+- rasters e vetores ficam fora do SQLite;
+- o banco guarda apenas metadados e paths relativos.
 
-O inventario inicial fica em `data/interim/history_station_inventory.csv`. O bootstrap do banco historico calcula `station_uid` como base do provider (`1000000000` para ANA, `2000000000` para INMET) somada ao `station_code`, convertendo letras para numeros (`A=1`, `B=2`, etc.), e carrega o inventario no banco.
+`data/spatial/` continua sendo o destino canonico dos assets espaciais tratados, mas o mapa do dashboard ainda depende de material legado em `data/legacy/app_layers/`.
 
-### Series observadas
+## Configuracao
 
-Observados entram em formato long:
+A configuracao operacional do repositorio continua em:
 
-- cada combinacao `station_uid + variable_code + state` vira uma linha em `observed_series`;
-- cada ponto temporal vira uma linha em `observed_value`.
+- `config/default.yaml`
+- `config/custom.yaml`
 
-Metadados operacionais da aquisicao nao entram no banco historico nesta fase. Eles ficam em logs de execucao.
+A possivel migracao para `.toml` segue em avaliacao e ainda nao altera o modelo de dados nem o contrato de runtime desta fase.
 
-### Derivados operacionais
+## Schemas canonicos
 
-Derivados operacionais sao representados por:
-
-- `derived_series` define a serie derivada;
-- `derived_value` guarda `window_start`, `window_end`, `horizon_h` e `value`.
-
-### Assets de grade e raster
-
-Grades e rasters continuam fora do SQLite. O banco guarda apenas metadados e paths relativos.
-
-- no historico, o GRIB2 original entra em `asset`;
-- no run, `run_asset` aponta para o original e para o editado quando existir;
-- rasters interpolados entram como `run_asset` com metadados em `metadata_json`.
-
-### Setup espacial do MGB
-
-O cadastro espacial do MGB nao entra nem no historico nem no run. Ele fica em um GPKG externo em `data/spatial/<mgb_setup>.gpkg`.
-
-O banco do run guarda apenas a referencia desse setup em `model_execution.setup_gpkg_path`.
-
-### Outputs do MGB
-
-No contrato atual, o output completo do MGB permanece nos binarios do runner e o dashboard acessa esse material diretamente.
-
-O run guarda apenas o subset operacional desses outputs:
-
-- `mgb_output_series`: uma serie por `variable_code + cell_id + prev_flag`;
-- `mgb_output_value`: um valor por `series_id + dt`.
-- para o consumo do dashboard, `variable_code` canonico usa `q` para `QTUDO*` e `y` para `YTUDO*`;
-- `display_name` preserva o nome original do produto MGB (`QTUDO` e `YTUDO`);
-- `series_id` e deterministico no formato `<mini_id com zero a esquerda para 4 digitos>.<variable_code>.<sim|for>`, por exemplo `0539.q.sim`.
-
-Isso deixa o run mais aderente ao uso operacional sem exigir um artefato tabular gigante para visualizacao.
-
-## Schemas implementados
-
-Os schemas canonicos ficam em:
+Os schemas canonicos implementados seguem em:
 
 - `sql/history_schema.sql`
 - `sql/run_schema.sql`
