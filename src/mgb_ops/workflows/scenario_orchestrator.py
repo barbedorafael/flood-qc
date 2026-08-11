@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 from multiprocessing import get_context
 from pathlib import Path
@@ -11,6 +11,8 @@ import shutil
 from uuid import uuid4
 
 from mgb_ops.assets.scenario_cache import scenario_cache_root
+from mgb_ops.assets.current_run import CurrentRunArtifact
+from mgb_ops.assets.observed_precipitation import build_observed_precipitation_cache
 from mgb_ops.assets.types import RunMetadata
 from mgb_ops.config.runtime import RuntimeContext
 from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
@@ -22,6 +24,7 @@ from mgb_ops.model.prepare_mgb_rainfall import (
     prepare_mgb_rainfall,
 )
 from mgb_ops.utils.logging import configure_run_logger
+from mgb_ops.utils.time import TIMEZONE, build_horizon_window
 from mgb_ops.workflows.scenarios import ForecastScenario
 
 
@@ -108,6 +111,7 @@ def _execute_scenario(
     executable_path: Path,
     observed_provider_codes: tuple[str, ...],
     execution_env: Mapping[str, str],
+    prebuilt_observed_cache_path: Path | None = None,
 ) -> ScenarioRunResult:
     settings = context.settings
     paths = context.paths
@@ -134,7 +138,7 @@ def _execute_scenario(
     rewrite_mgb_meta(
         parhig_path=parhig_path,
         reference_time=reference_time,
-        input_days_before=int(mgb_settings["input_days_before"]),
+        observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
         forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
         timestep_hours=timestep_hours,
         logger=logger,
@@ -150,11 +154,12 @@ def _execute_scenario(
         mini_gtp_path=mini_gtp_path,
         output_path=chuvabin_path,
         reference_time=reference_time,
-        input_days_before=int(mgb_settings["input_days_before"]),
+        observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
         forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
         use_forecast_data=scenario.kind != "zero",
         forecast_asset_path=scenario.asset_path,
         forecast_correction=scenario.correction,
+        forecast_corrections=scenario.corrections,
         cache_dir=work_dir / "cache",
         spatial_bbox=tuple(float(value) for value in bbox),
         spatial_resolution_degrees=float(spatial_settings["resolution_degrees"]),
@@ -163,6 +168,7 @@ def _execute_scenario(
         power=float(rainfall_settings["power"]),
         timestep_hours=timestep_hours,
         logger=logger,
+        prebuilt_observed_cache_path=prebuilt_observed_cache_path,
     )
     run = RunMetadata(run_id=run_id, reference_time=reference_time.isoformat(timespec="seconds"))
     plan = prepare_mgb_execution(
@@ -192,7 +198,7 @@ def _execute_scenario(
         forecast_grid_relative_path = str(forecast_grid_target.relative_to(staging_dir))
     export_mgb_outputs(
         reference_time=reference_time,
-        output_days_before=int(mgb_settings["output_days_before"]),
+        observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
         forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
         parhig_path=parhig_path,
         mini_gtp_path=mini_gtp_path,
@@ -214,12 +220,11 @@ def _publish_current_cache(
     results: tuple[ScenarioRunResult, ...],
 ) -> Path:
     work_dir = staging_dir / "work"
+    shared_dir = staging_dir / "shared"
     if results:
-        observed_source = (
-            work_dir
-            / _safe_name(results[0].scenario)
-            / "cache"
-            / MGB_OBSERVED_CACHE_FILENAME
+        shared_source = shared_dir / MGB_OBSERVED_CACHE_FILENAME
+        observed_source = shared_source if shared_source.is_file() else (
+            work_dir / _safe_name(results[0].scenario) / "cache" / MGB_OBSERVED_CACHE_FILENAME
         )
         if observed_source.is_file():
             observed_target = root.parent / MGB_OBSERVED_CACHE_FILENAME
@@ -230,6 +235,8 @@ def _publish_current_cache(
             observed_temp.replace(observed_target)
     if work_dir.exists():
         shutil.rmtree(work_dir)
+    if shared_dir.exists():
+        shutil.rmtree(shared_dir)
 
     previous_dir: Path | None = None
     if root.exists():
@@ -257,6 +264,8 @@ def execute_forecast_scenarios(
     observed_provider_codes: tuple[str, ...] = (),
     reference_time: datetime | None = None,
     execution_env: Mapping[str, str] | None = None,
+    artifact: CurrentRunArtifact | None = None,
+    execution_id: str | None = None,
 ) -> ScenarioBatchResult:
     """Execute pre-derived scenarios concurrently and atomically publish their caches."""
     ordered = tuple(scenarios)
@@ -288,9 +297,35 @@ def execute_forecast_scenarios(
     root = scenario_cache_root(context.paths.cache_dir)
     root.parent.mkdir(parents=True, exist_ok=True)
     _recover_orphaned_cache_dirs(root)
-    batch_id = resolved_reference.strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
+    batch_id = execution_id or (resolved_reference.strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8])
     staging_dir = _private_cache_dir(root.parent, kind="staging", token=batch_id)
     staging_dir.mkdir()
+    prebuilt_observed_cache_path = None
+    if artifact is not None:
+        spatial = artifact.spatial_settings
+        interpolation = artifact.interpolation_settings
+        bbox = spatial.get("bbox")
+        if bbox is None:
+            raise ValueError("Artifact spatial_settings.bbox is required for execution.")
+        model_window = build_horizon_window(
+            datetime.fromisoformat(artifact.reference_time),
+            days_before=int(artifact.mgb_settings["observed_horizon_days"]),
+            horizon_days=int(artifact.mgb_settings["forecast_horizon_days"]),
+            timestep_hours=artifact.timestep_hours,
+        )
+        local_start = model_window.start_time - timedelta(hours=artifact.timestep_hours)
+        local_end = datetime.fromisoformat(artifact.reference_time)
+        prebuilt_observed_cache_path = build_observed_precipitation_cache(
+            context.paths.history_db, staging_dir / "shared",
+            bbox=tuple(float(value) for value in bbox),
+            resolution_degrees=float(spatial["resolution_degrees"]),
+            start_time_utc=local_start.replace(tzinfo=TIMEZONE).astimezone(timezone.utc),
+            end_time_utc=local_end.replace(tzinfo=TIMEZONE).astimezone(timezone.utc),
+            timestep_hours=artifact.timestep_hours, providers=artifact.observed_providers,
+            nearest_stations=int(interpolation["nearest_stations"]), power=float(interpolation["power"]),
+            filename=MGB_OBSERVED_CACHE_FILENAME, include_boundary_cells=True, artifact=artifact,
+            processing_metadata={"model_role": "observed_working_grid", "execution_id": batch_id},
+        )
 
     results_by_id: dict[str, ScenarioRunResult] = {}
     failures: dict[str, BaseException] = {}
@@ -305,6 +340,7 @@ def execute_forecast_scenarios(
                 executable_path=executable,
                 observed_provider_codes=tuple(observed_provider_codes),
                 execution_env=dict(execution_env or {}),
+                prebuilt_observed_cache_path=prebuilt_observed_cache_path,
             ): scenario
             for scenario in ordered
         }
@@ -341,7 +377,6 @@ def execute_current_artifact(
     execution_env: Mapping[str, str] | None = None,
 ) -> ScenarioBatchResult:
     """Execute one immutable artifact snapshot under a workspace publication lock."""
-    from datetime import timezone
     import fcntl
     from mgb_ops.assets.current_run import CurrentExecution, CurrentRunRepository
     from mgb_ops.workflows.scenarios import scenarios_from_artifact
@@ -357,18 +392,29 @@ def execute_current_artifact(
         with CurrentRunRepository(path) as repository:
             artifact = repository.load()
             execution_id = uuid4().hex
-            repository.set_execution(CurrentExecution("running", execution_id, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+            started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            repository.set_execution(CurrentExecution("running", execution_id, started_at))
+        artifact_settings = dict(context.settings)
+        artifact_settings["run"] = {"reference_time": artifact.reference_time, "timestep_hours": artifact.timestep_hours}
+        artifact_settings["mgb"] = dict(artifact.mgb_settings)
+        artifact_settings["spatial_grid"] = dict(artifact.spatial_settings)
+        artifact_settings["rainfall_interpolation"] = dict(artifact.interpolation_settings)
+        artifact_context = RuntimeContext(context.paths, artifact_settings, context.env)
+        resolved_executable = executable_path
+        if resolved_executable is None and artifact.mgb_settings.get("executable_path"):
+            resolved_executable = context.paths.resolve_path(str(artifact.mgb_settings["executable_path"]))
         try:
             result = execute_forecast_scenarios(
-                context, scenarios_from_artifact(artifact), executable_path=executable_path,
+                artifact_context, scenarios_from_artifact(artifact), executable_path=resolved_executable,
                 observed_provider_codes=artifact.observed_providers,
                 reference_time=datetime.fromisoformat(artifact.reference_time), execution_env=execution_env,
+                artifact=artifact, execution_id=execution_id,
             )
         except BaseException as exc:
             with CurrentRunRepository(path) as repository:
-                repository.set_execution(CurrentExecution("failed", execution_id, None, datetime.now(timezone.utc).isoformat(timespec="seconds"), str(exc)))
+                repository.set_execution(CurrentExecution("failed", execution_id, started_at, datetime.now(timezone.utc).isoformat(timespec="seconds"), str(exc)))
             raise
         caches = {item.scenario.scenario_id: str(item.cache_path.relative_to(context.paths.workspace)) for item in result.results}
         with CurrentRunRepository(path) as repository:
-            repository.set_execution(CurrentExecution("completed", execution_id, None, datetime.now(timezone.utc).isoformat(timespec="seconds")), caches=caches)
+            repository.set_execution(CurrentExecution("completed", execution_id, started_at, datetime.now(timezone.utc).isoformat(timespec="seconds")), caches=caches)
         return result

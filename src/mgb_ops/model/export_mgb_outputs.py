@@ -275,9 +275,9 @@ def validate_source_lengths(sources: dict[str, OutputSource]) -> tuple[dict[str,
     return sources, nt_set.pop()
 
 
-def build_export_window(reference_time: datetime, *, output_days_before: int, forecast_horizon_days: int) -> ExportWindow:
+def build_export_window(reference_time: datetime, *, observed_horizon_days: int, forecast_horizon_days: int) -> ExportWindow:
     reference_date = reference_time.date()
-    window_start = datetime.combine(reference_date - timedelta(days=output_days_before), time.min)
+    window_start = datetime.combine(reference_date - timedelta(days=observed_horizon_days), time.min)
     window_end_exclusive = datetime.combine(reference_date + timedelta(days=forecast_horizon_days + 1), time.min)
     return ExportWindow(
         reference_time=reference_time,
@@ -528,7 +528,7 @@ def write_output_netcdf(
 def export_mgb_outputs(
     *,
     reference_time: datetime,
-    output_days_before: int,
+    observed_horizon_days: int,
     forecast_horizon_days: int,
     parhig_path: Path,
     mini_gtp_path: Path,
@@ -557,8 +557,8 @@ def export_mgb_outputs(
     if chunk_hours <= 0:
         raise ValueError(f"chunk_hours must be > 0, got {chunk_hours}")
 
-    if output_days_before < 0 or forecast_horizon_days < 0:
-        raise ValueError("output_days_before and forecast_horizon_days must be >= 0.")
+    if observed_horizon_days < 0 or forecast_horizon_days < 0:
+        raise ValueError("observed_horizon_days and forecast_horizon_days must be >= 0.")
 
     nc = read_nc_from_parhig(parhig_path)
     start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
@@ -583,7 +583,7 @@ def export_mgb_outputs(
 
     export_window = build_export_window(
         reference_time,
-        output_days_before=output_days_before,
+        observed_horizon_days=observed_horizon_days,
         forecast_horizon_days=forecast_horizon_days,
     )
     run_logger.info(

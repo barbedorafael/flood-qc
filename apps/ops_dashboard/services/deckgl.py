@@ -572,3 +572,78 @@ def inspect_raster_click(
     if lookup is None:
         return None
     return lookup_raster_value(lookup, *selection.coordinate)
+
+QC_STATION_COLORS = {
+    "available": [73, 80, 87, 210],
+    "threshold_flagged": [214, 51, 108, 235],
+    "sequence_flagged": [240, 140, 0, 235],
+    "replaced": [25, 113, 194, 235],
+    "excluded": [134, 142, 150, 150],
+}
+
+
+def categorize_qc_stations(
+    stations: pd.DataFrame,
+    flags: pd.DataFrame,
+    replacements: pd.DataFrame,
+    exclusions: pd.DataFrame,
+) -> pd.DataFrame:
+    """Assign one deterministic display category to each rainfall station."""
+    result = stations.copy()
+    if result.empty:
+        result["qc_category"] = pd.Series(dtype=str)
+        return result
+    flag_column = "flag_type" if "flag_type" in flags else "match_type"
+    threshold = set(flags.loc[flags[flag_column] == "threshold", "station_id"].astype(str)) if not flags.empty and flag_column in flags else set()
+    sequence = set(flags.loc[flags[flag_column] == "sequence", "station_id"].astype(str)) if not flags.empty and flag_column in flags else set()
+    replaced = set(replacements["station_id"].astype(str)) if not replacements.empty and "station_id" in replacements else set()
+    excluded = set(exclusions["station_id"].astype(str)) if not exclusions.empty and "station_id" in exclusions else set()
+
+    def category(station_id: object) -> str:
+        key = str(station_id)
+        if key in excluded:
+            return "excluded"
+        if key in replaced:
+            return "replaced"
+        if key in threshold:
+            return "threshold_flagged"
+        if key in sequence:
+            return "sequence_flagged"
+        return "available"
+
+    result["qc_category"] = result["station_id"].map(category)
+    return result
+
+
+def build_qc_station_map(
+    stations: pd.DataFrame,
+    flags: pd.DataFrame,
+    replacements: pd.DataFrame,
+    exclusions: pd.DataFrame,
+    *,
+    selected_station: str | None = None,
+) -> DeckGLArtifacts:
+    categorized = categorize_qc_stations(stations, flags, replacements, exclusions)
+    features, picks = [], []
+    for row in categorized.dropna(subset=["lat", "lon"]).itertuples(index=False):
+        station_id, category = str(row.station_id), str(row.qc_category)
+        properties = {
+            "station_id": station_id, "qc_category": category,
+            "station_name": str(getattr(row, "station_name", station_id)),
+            "color": QC_STATION_COLORS[category],
+            "selected": station_id == str(selected_station),
+        }
+        features.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [float(row.lon), float(row.lat)]}, "properties": properties})
+        picks.append(MapSelection(station_id=station_id))
+    layer = {
+        "@@type": "GeoJsonLayer", "id": "qc-stations",
+        "data": {"type": "FeatureCollection", "features": features},
+        "pickable": True, "pointType": "circle", "filled": True,
+        "getFillColor": "properties.color",
+        "getPointRadius": "properties.selected ? 8500 : 5500",
+    }
+    return DeckGLArtifacts(
+        spec={"initialViewState": default_view_state(stations=categorized), "controller": True, "layers": [layer]},
+        raster_lookups={}, pick_lookups={"qc-stations": tuple(picks)},
+        tooltips={"qc-stations": {"html": "<b>{station_name}</b><br/>{qc_category}"}},
+    )

@@ -44,14 +44,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "selected_mini_ids": [],
     },
     "mgb": {
-        "input_days_before": 56,
-        "output_days_before": 28,
+        "observed_horizon_days": 56,
         "forecast_horizon_days": 14,
         "use_forecast_data": True,
     },
     "rainfall_interpolation": {
         "nearest_stations": 5,
         "power": 2.0,
+    },
+    "precipitation_qc": {
+        "threshold_mm": 50.0,
+        "sequence_min_length": 5,
+        "sequence_lower_mm": 0.0,
+        "sequence_upper_mm": 1.0,
     },
 }
 
@@ -231,8 +236,7 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "selected_mini_ids": _validate_selected_mini_ids,
         },
         "mgb": {
-            "input_days_before": _validate_positive_int,
-            "output_days_before": _validate_positive_int,
+            "observed_horizon_days": _validate_positive_int,
             "forecast_horizon_days": _validate_positive_int,
             "use_forecast_data": _validate_bool,
         },
@@ -240,8 +244,17 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "nearest_stations": _validate_positive_int,
             "power": _validate_positive_number,
         },
+        "precipitation_qc": {
+            "threshold_mm": _validate_nonnegative_number,
+            "sequence_min_length": _validate_positive_int,
+            "sequence_lower_mm": _validate_nonnegative_number,
+            "sequence_upper_mm": _validate_positive_number,
+        },
     }
     _validate_section(_require_mapping(settings, "config"), schema, "config")
+    qc = settings["precipitation_qc"]
+    if float(qc["sequence_lower_mm"]) >= float(qc["sequence_upper_mm"]):
+        raise ValueError("config.precipitation_qc sequence bounds must satisfy lower < upper.")
 
 
 def load_settings(

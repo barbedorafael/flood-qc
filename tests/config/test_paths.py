@@ -14,6 +14,7 @@ def test_standard_paths_are_explicitly_derived_from_workspace(tmp_path) -> None:
 
     assert paths.workspace == workspace.resolve()
     assert paths.history_db == workspace.resolve() / "data" / "history.sqlite"
+    assert paths.current_run_db == workspace.resolve() / "data" / "cache" / "current_run.sqlite"
     assert paths.source_dir == workspace.resolve() / "data" / "source"
     assert paths.downloads_dir == workspace.resolve() / "data" / "downloads"
     assert paths.assets_dir == workspace.resolve() / "data" / "assets"

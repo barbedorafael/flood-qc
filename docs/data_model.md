@@ -86,7 +86,7 @@ in-memory contracts; reusable interpolation and resampling live in
 
 ## Current Run Artifact
 
-`<workspace>/data/current_run.sqlite` is the sole mutable operational artifact. It contains one resolved run configuration, ordered scenario references and their correction transforms, observed replacements, `(start, end]` station exclusions, the current execution state, and published-cache references.
+`<workspace>/data/cache/current_run.sqlite` is the sole mutable operational artifact. It contains one resolved run configuration, ordered scenario references and their correction transforms, observed replacements, `(start, end]` station exclusions, the current execution state, and published-cache references.
 
 History is immutable operational input: preferred observations, stations, providers, and registered forecast assets only. It contains no QC flags, edits, or run catalog. Saved runs are explicit SQLite backup copies of `current_run.sqlite` and are never registered in history.
 

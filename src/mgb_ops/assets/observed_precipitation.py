@@ -2,18 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
 
 from mgb_ops.assets.grid_transforms import interpolate_station_values
-from mgb_ops.assets.history_queries import (
-    open_history_read_only,
-    read_observed_values,
-    read_rain_series,
-    select_preferred_series_rows,
-)
+from mgb_ops.assets.effective_observations import load_effective_observations
+from mgb_ops.assets.current_run import CurrentRunArtifact, ObservedReplacement, StationExclusion
 from mgb_ops.assets.spatial_grid import (
     RegularGridSpec,
     normalize_providers,
@@ -46,6 +42,9 @@ def build_observed_precipitation_cache(
     filename: str = OBSERVED_PRECIPITATION_CACHE_FILENAME,
     processing_metadata: Mapping[str, object] | None = None,
     include_boundary_cells: bool = False,
+    artifact: CurrentRunArtifact | None = None,
+    replacements: Iterable[ObservedReplacement] | None = None,
+    exclusions: Iterable[StationExclusion] | None = None,
 ) -> Path:
     """Interpolate observed precipitation timesteps and atomically replace the dashboard cache."""
     start_utc = _require_utc(start_time_utc, name="start_time_utc")
@@ -69,17 +68,11 @@ def build_observed_precipitation_cache(
     )
     local_start = start_utc.astimezone(TIMEZONE).replace(tzinfo=None)
     local_end = end_utc.astimezone(TIMEZONE).replace(tzinfo=None)
-    with open_history_read_only(Path(database_path)) as connection:
-        series = read_rain_series(connection)
-        series = series[series["provider_code"].astype(str).str.lower().isin(provider_codes)]
-        preferred = select_preferred_series_rows(series)
-        values = read_observed_values(
-            connection,
-            preferred["series_id"].astype(str).tolist(),
-            start_time=local_start,
-            end_time=local_end,
-            end_inclusive=True,
-        )
+    values = load_effective_observations(
+        Path(database_path), start_time=local_start, end_time=local_end,
+        timestep_hours=timestep_hours, artifact=artifact, replacements=replacements,
+        exclusions=exclusions, providers=provider_codes, require_complete_source=True,
+    )
 
     ends_utc = pd.date_range(
         pd.Timestamp(start_utc) + pd.Timedelta(step),
@@ -93,13 +86,9 @@ def build_observed_precipitation_cache(
         values = values.copy()
         values["observed_at"] = pd.to_datetime(values["observed_at"], errors="coerce")
         values["value"] = pd.to_numeric(values["value"], errors="coerce")
-        station_lookup = preferred.set_index("series_id")[["lat", "lon"]]
         fields_list: list[np.ndarray] = []
         for local_label in local_labels:
-            timestep = values[values["observed_at"] == local_label].merge(
-                station_lookup, left_on="series_id", right_index=True, how="inner"
-            )
-            timestep = timestep.dropna(subset=["value", "lat", "lon"])
+            timestep = values[values["observed_at"] == local_label].dropna(subset=["value", "lat", "lon"])
             if timestep.empty:
                 fields_list.append(np.full(grid.shape, np.nan, dtype=float))
             else:

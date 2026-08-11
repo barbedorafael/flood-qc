@@ -75,7 +75,7 @@ class RuntimePaths:
 
     @property
     def current_run_db(self) -> Path:
-        return self.data_dir / "current_run.sqlite"
+        return self.cache_dir / "current_run.sqlite"
 
     @property
     def logs_dir(self) -> Path:

@@ -230,6 +230,21 @@ def write_model_outputs(path: Path) -> Path:
     return path
 
 
+def test_dashboard_chart_start_filters_valid_model_without_stale_error(tmp_path) -> None:
+    from apps.ops_dashboard.services.loaders import _mgb_series
+
+    source = write_model_outputs(tmp_path / "model_outputs.nc")
+    chart_window = AnalysisWindow(
+        datetime(2026, 2, 2), datetime(2026, 2, 2, 23), datetime(2026, 2, 4)
+    )
+
+    series = _mgb_series(539, "flow", str(source), str(tmp_path), "v1", chart_window)
+
+    assert series["dt"].min() == pd.Timestamp("2026-02-02T00:00:00")
+    assert len(series) == 48
+
+
+
 def test_load_mgb_series_splits_current_and_forecast(tmp_path) -> None:
     source = write_model_outputs(tmp_path / "model_outputs.nc")
     series = ops_dashboard_data.load_mgb_series(source, mini_id=539, variable_code="flow")

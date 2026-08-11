@@ -84,6 +84,29 @@ def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
     assert state.raster_inspection.value == 4.0
 
 
+def test_chart_start_time_only_changes_chart_window(tmp_path: Path, monkeypatch) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "history.sqlite").touch()
+    windows = []
+    monkeypatch.setattr(dashboard_state, "_observed_series", lambda *args: windows.append(args[-1]) or pd.DataFrame())
+    state = dashboard_state.DashboardState(tmp_path)
+    state.station_id = "ana:1"
+    full_window = state.window
+    review_window = (state.review_window_start, state.review_window_end)
+
+    state.observed_series()
+    state.start_time = datetime(2026, 3, 1, 6)
+    state.chart_observed_series()
+
+    assert windows[0] == full_window
+    assert windows[1].start_time == datetime(2026, 3, 1, 6)
+    assert state.window == full_window
+    assert (state.review_window_start, state.review_window_end) == review_window
+    assert not state.context.paths.current_run_db.exists()
+
+
+
 def test_state_does_not_preselect_an_available_station(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -191,8 +214,8 @@ def test_state_draft_validation_failure_sets_status(tmp_path: Path) -> None:
 
 
 def test_state_persists_artifact_backed_replacement(tmp_path: Path) -> None:
-    path = tmp_path / "data" / "current_run.sqlite"
-    create_current_artifact(path, CurrentRunArtifact("2026-03-12T00:00:00", "2026-03-01T00:00:00", "2026-03-26T00:00:00", 1, {}, {}, {}, {}, ("ana",), scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero"), ForecastScenarioReference("raw:asset", 1, "raw", "Raw", "ecmwf", "asset", "forecast.nc"))))
+    path = tmp_path / "data" / "cache" / "current_run.sqlite"
+    create_current_artifact(path, CurrentRunArtifact("2026-03-12T00:00:00", "2026-03-26T00:00:00", 1, {}, {}, {}, {}, ("ana",), scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero"), ForecastScenarioReference("raw:asset", 1, "raw", "Raw", "ecmwf", "asset", "forecast.nc"))))
     state = dashboard_state.DashboardState(tmp_path)
     state.forecast_asset_id = "asset"
     state.forecast_draft = dashboard_state.empty_forecast_edit_frame()

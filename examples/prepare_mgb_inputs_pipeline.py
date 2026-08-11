@@ -113,7 +113,7 @@ fetch_window = build_horizon_window(
 )
 mgb_window = build_horizon_window(
     reference_time,
-    days_before=int(mgb_settings["input_days_before"]),
+    days_before=int(mgb_settings["observed_horizon_days"]),
     horizon_days=int(mgb_settings["forecast_horizon_days"]),
     timestep_hours=timestep_hours,
 )
@@ -265,7 +265,7 @@ if use_forecast_data and forecast_asset is None:
 meta_summary = rewrite_mgb_meta(
     parhig_path=PARHIG_PATH,
     reference_time=mgb_window.reference_time,
-    input_days_before=int(mgb_settings["input_days_before"]),
+    observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
@@ -292,7 +292,7 @@ rainfall_summary = prepare_mgb_rainfall(
     mini_gtp_path=MINI_GTP_PATH,
     output_path=CHUVABIN_PATH,
     reference_time=mgb_window.reference_time,
-    input_days_before=int(mgb_settings["input_days_before"]),
+    observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     use_forecast_data=use_forecast_data,
     forecast_asset_path=forecast_asset.asset_path if forecast_asset is not None else None,

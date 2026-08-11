@@ -18,7 +18,7 @@ class MgbMetaUpdateSummary:
     start_time: datetime
     nt: int
     dt_seconds: int
-    input_days_before: int
+    observed_horizon_days: int
     forecast_horizon_days: int
 
 
@@ -115,7 +115,7 @@ def rewrite_mgb_meta(
     *,
     parhig_path: Path,
     reference_time: datetime,
-    input_days_before: int,
+    observed_horizon_days: int,
     forecast_horizon_days: int,
     timestep_hours: int = 1,
     logs_dir: Path | None = None,
@@ -123,7 +123,7 @@ def rewrite_mgb_meta(
 ) -> MgbMetaUpdateSummary:
     window = build_horizon_window(
         reference_time,
-        days_before=input_days_before,
+        days_before=observed_horizon_days,
         horizon_days=forecast_horizon_days,
         timestep_hours=timestep_hours,
     )
@@ -143,13 +143,13 @@ def rewrite_mgb_meta(
 
     if run_logger is not None:
         run_logger.info(
-            "mgb_meta_updated parhig=%s reference_time=%s start_time=%s nt=%s dt_seconds=%s input_days_before=%s forecast_horizon_days=%s",
+            "mgb_meta_updated parhig=%s reference_time=%s start_time=%s nt=%s dt_seconds=%s observed_horizon_days=%s forecast_horizon_days=%s",
             parhig_path,
             window.reference_time.isoformat(timespec="seconds"),
             window.start_time.isoformat(timespec="seconds"),
             window.nt,
             window.dt_seconds,
-            input_days_before,
+            observed_horizon_days,
             forecast_horizon_days,
         )
     return MgbMetaUpdateSummary(
@@ -158,6 +158,6 @@ def rewrite_mgb_meta(
         start_time=window.start_time,
         nt=window.nt,
         dt_seconds=window.dt_seconds,
-        input_days_before=input_days_before,
+        observed_horizon_days=observed_horizon_days,
         forecast_horizon_days=forecast_horizon_days,
     )

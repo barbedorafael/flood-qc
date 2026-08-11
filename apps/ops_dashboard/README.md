@@ -56,4 +56,4 @@ interface.
 
 
 The Monitoring tab selects the forecast scenario displayed on the operational map and can overlay multiple scenario results in the selected-area comparison. Forecast asset preview and correction editing continue to read
-the registered asset catalog and `current_run.sqlite` artifact directly.
+the registered asset catalog and `data/cache/current_run.sqlite` artifact directly.

@@ -4,11 +4,14 @@ PRAGMA foreign_keys = ON;
 -- never a catalog and must not be used as a history store.
 CREATE TABLE current_run (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    reference_time TEXT NOT NULL, window_start TEXT NOT NULL, forecast_end_exclusive TEXT NOT NULL,
+    reference_time TEXT NOT NULL, forecast_end_exclusive TEXT NOT NULL,
     timestep_hours INTEGER NOT NULL CHECK (timestep_hours > 0),
     mgb_settings_json TEXT NOT NULL, spatial_settings_json TEXT NOT NULL,
     interpolation_settings_json TEXT NOT NULL, review_window_json TEXT NOT NULL,
-    observed_providers_json TEXT NOT NULL, responsible_person TEXT, reason TEXT,
+    observed_providers_json TEXT NOT NULL,
+    precipitation_qc_settings_json TEXT NOT NULL,
+    saved_run_id TEXT, saved_run_description TEXT,
+    responsible_person TEXT, reason TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE forecast_scenario (

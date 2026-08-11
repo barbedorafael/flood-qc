@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -324,8 +326,10 @@ def _build_forecast_working_cache(
     forecast_nt: int,
     timestep_hours: int,
     correction: ForecastCorrectionInstruction | None = None,
+    corrections: Sequence[ForecastCorrectionInstruction] | None = None,
 ) -> Path:
     source = read_spatial_grid(source_path)
+    resolved_corrections = tuple(corrections or (() if correction is None else (correction,)))
     if source.variable != "precipitation" or source.grid_type != "forecast":
         raise ValueError("Expected a forecast precipitation spatial grid.")
     target_ends = [
@@ -364,12 +368,12 @@ def _build_forecast_working_cache(
             units=source.units,
             source="forecast",
         )
-        if correction is not None:
+        for instruction in resolved_corrections:
             cycle_start = source.time_bounds_utc[0][0]
-            correction_start = cycle_start + timedelta(hours=correction.t0_step)
-            correction_end = cycle_start + timedelta(hours=correction.t1_step)
+            correction_start = cycle_start + timedelta(hours=instruction.t0_step)
+            correction_end = cycle_start + timedelta(hours=instruction.t1_step)
             if source_start >= correction_start and source_end <= correction_end:
-                source_grid = apply_grid_correction(source_grid, correction)
+                source_grid = apply_grid_correction(source_grid, instruction)
         per_step = source_grid.values / (source_hours / timestep_hours)
         fields.append(
             resample_regular_grid(
@@ -441,7 +445,7 @@ def prepare_mgb_rainfall(
     mini_gtp_path: Path,
     output_path: Path,
     reference_time: datetime,
-    input_days_before: int,
+    observed_horizon_days: int,
     forecast_horizon_days: int,
     use_forecast_data: bool,
     nearest_stations: int,
@@ -450,10 +454,12 @@ def prepare_mgb_rainfall(
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     forecast_asset_path: Path | None = None,
     forecast_correction: ForecastCorrectionInstruction | None = None,
+    forecast_corrections: Sequence[ForecastCorrectionInstruction] | None = None,
     cache_dir: Path | None = None,
     spatial_bbox: tuple[float, float, float, float] | None = None,
     spatial_resolution_degrees: float | None = None,
     observed_providers: tuple[str, ...] | list[str] | None = None,
+    prebuilt_observed_cache_path: Path | None = None,
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> RainfallPreparationSummary:
@@ -482,7 +488,7 @@ def prepare_mgb_rainfall(
 
     window = build_horizon_window(
         reference_time,
-        days_before=input_days_before,
+        days_before=observed_horizon_days,
         horizon_days=forecast_horizon_days,
         timestep_hours=timestep_hours,
     )
@@ -541,7 +547,15 @@ def prepare_mgb_rainfall(
             include_boundary_cells=True,
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
-        observed_cache_path = build_observed_precipitation_cache(
+        observed_cache_path = cache_dir / MGB_OBSERVED_CACHE_FILENAME
+        if prebuilt_observed_cache_path is not None:
+            source_observed_cache = Path(prebuilt_observed_cache_path)
+            if not source_observed_cache.is_file():
+                raise FileNotFoundError(f"Prebuilt observed cache not found: {source_observed_cache}")
+            if source_observed_cache.resolve() != observed_cache_path.resolve():
+                shutil.copy2(source_observed_cache, observed_cache_path)
+        else:
+            observed_cache_path = build_observed_precipitation_cache(
             history_db,
             cache_dir,
             bbox=spatial_bbox,
@@ -562,7 +576,7 @@ def prepare_mgb_rainfall(
                 "effective_bbox": list(grid_spec.effective_bbox),
                 "boundary_cell_policy": "closed_footprint_intersects_bbox",
             },
-        )
+            )
         observed_grid = read_spatial_grid(observed_cache_path)
         if not np.isfinite(observed_grid.values).all():
             raise ValueError("Observed data does not cover the complete MGB working grid and window.")
@@ -586,6 +600,7 @@ def prepare_mgb_rainfall(
                 forecast_nt=window.forecast_nt,
                 timestep_hours=timestep_hours,
                 correction=forecast_correction,
+                corrections=forecast_corrections,
             )
             forecast_grid = read_spatial_grid(forecast_cache_path)
             forecast_mini_matrix = _grid_to_mini_matrix(

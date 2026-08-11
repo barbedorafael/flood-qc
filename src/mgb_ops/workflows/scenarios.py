@@ -10,12 +10,14 @@ import pandas as pd
 
 from mgb_ops.adapters import get_forecast_adapter
 from mgb_ops.assets.current_run import (
-    CurrentRunArtifact, ForecastScenarioReference, create_current_artifact,
+    CurrentRunArtifact, ForecastScenarioReference, ObservedReplacement, create_current_artifact,
     load_current_artifact,
 )
 from mgb_ops.assets.forecast_registry import list_forecast_assets
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
+from mgb_ops.analysis.observations import load_preferred_rainfall_observations
+from mgb_ops.qc.precipitation import PrecipitationQCPolicy, detect_suspect_precipitation
 
 ScenarioKind = Literal["zero", "raw", "corrected"]
 
@@ -93,7 +95,6 @@ def build_current_artifact(
     workspace_path: Path,
     *,
     reference_time: datetime | str,
-    window_start: datetime | str,
     forecast_end_exclusive: datetime | str,
     timestep_hours: int,
     mgb_settings: Mapping[str, Any],
@@ -103,13 +104,29 @@ def build_current_artifact(
     observed_providers: tuple[str, ...] | list[str],
     responsible_person: str | None = None,
     reason: str | None = None,
+    precipitation_qc_settings: Mapping[str, Any] | None = None,
 ) -> CurrentRunArtifact:
     refs = resolve_forecast_scenario_references(history_database_path, workspace_path, required_start=pd.Timestamp(reference_time).to_pydatetime(), required_end=pd.Timestamp(forecast_end_exclusive).to_pydatetime())
+    policy = PrecipitationQCPolicy.from_mapping(precipitation_qc_settings)
+    seeded_replacements: tuple[ObservedReplacement, ...] = ()
+    if not Path(database_path).exists():
+        review_start, review_end = pd.Timestamp(review_window["start"]), pd.Timestamp(review_window["end"])
+        observations = load_preferred_rainfall_observations(
+            history_database_path, start_time=review_start.to_pydatetime(),
+            end_time=review_end.to_pydatetime(), providers=observed_providers,
+        )
+        matches = detect_suspect_precipitation(observations, timestep_hours=int(timestep_hours), policy=policy)
+        values: dict[tuple[str, str], float | None] = {}
+        for match in matches.matches:
+            values[(match.station_id, match.observed_at)] = None if match.match_type == "threshold" else 0.0
+        seeded_replacements = tuple(ObservedReplacement(station, observed_at, value) for (station, observed_at), value in sorted(values.items()))
     return create_current_artifact(database_path, CurrentRunArtifact(
-        reference_time=str(reference_time), window_start=str(window_start), forecast_end_exclusive=str(forecast_end_exclusive),
+        reference_time=str(reference_time), forecast_end_exclusive=str(forecast_end_exclusive),
         timestep_hours=int(timestep_hours), mgb_settings=dict(mgb_settings), spatial_settings=dict(spatial_settings),
         interpolation_settings=dict(interpolation_settings), review_window=dict(review_window),
-        observed_providers=tuple(observed_providers), responsible_person=responsible_person, reason=reason, scenarios=refs,
+        observed_providers=tuple(observed_providers), precipitation_qc_settings=policy.as_dict(),
+        responsible_person=responsible_person, reason=reason or "default precipitation replacements",
+        scenarios=refs, observed_replacements=seeded_replacements,
     ))
 
 

@@ -174,7 +174,7 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     run_reason = pn.widgets.TextInput(name="Run reason")
     add_button = pn.widgets.Button(name="Add correction", button_type="light")
     save_button = pn.widgets.Button(
-        name="Save changes", button_type="primary", icon="device-floppy"
+        name="Apply to Current Run Draft", button_type="primary", icon="device-floppy"
     )
 
     def show_controller_message() -> None:
@@ -204,7 +204,7 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     def save_rows(_: Any) -> None:
         controller.update_forecast_draft(table.value)
         try:
-            controller.save_forecast_corrections(responsible_person=responsible_person.value, reason=run_reason.value)
+            controller.apply_forecast_draft(responsible_person=responsible_person.value, reason=run_reason.value)
             table.value = controller.forecast_draft.copy()
         except (ValueError, sqlite3.IntegrityError) as exc:
             # The controller records the more useful validation/database message.
@@ -214,6 +214,13 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
 
     add_button.on_click(add_row)
     save_button.on_click(save_rows)
+    conflicting = [asset, apply_button, add_button, save_button]
+    def disable_conflicting(event: Any) -> None:
+        for widget in conflicting:
+            widget.disabled = bool(event.new)
+    controller.param.watch(disable_conflicting, "execution_active")
+    for widget in conflicting:
+        widget.disabled = bool(controller.execution_active)
 
     def refresh_asset_widgets(_: Any) -> None:
         frame = controller.forecast_assets
@@ -247,7 +254,7 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     )
     corrections = pn.Card(
         pn.pane.Markdown(
-            "Add a correction below, then edit typed cells or mark rows for removal before saving the replacement set transactionally."
+            "Add a correction below, then edit typed cells or mark rows for removal before applying the replacement set to this session draft."
         ),
         pn.Row(correction_t0, correction_t1, sizing_mode="stretch_width"),
         pn.Row(

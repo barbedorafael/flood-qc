@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from threading import Barrier
 
@@ -24,7 +24,7 @@ from mgb_ops.workflows.scenarios import ForecastScenario, derive_forecast_scenar
 def test_scenarios_are_read_from_the_current_artifact_snapshot(tmp_path: Path) -> None:
     database = tmp_path / "data" / "current_run.sqlite"
     create_current_artifact(database, CurrentRunArtifact(
-        "2026-03-12T00:00:00", "2026-03-01T00:00:00", "2026-03-26T00:00:00", 1,
+        "2026-03-12T00:00:00", "2026-03-26T00:00:00", 1,
         {}, {}, {}, {}, ("ana",), responsible_person="operator", reason="forecast review",
         scenarios=(
             ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon"),
@@ -118,6 +118,43 @@ def test_orchestrator_uses_spawned_process_workers() -> None:
         assert executor._mp_context.get_start_method() == "spawn"
     finally:
         executor.shutdown()
+
+
+def test_artifact_observed_cache_uses_full_model_horizon(tmp_path: Path, monkeypatch) -> None:
+    context = _context(tmp_path)
+    context.settings["mgb"]["observed_horizon_days"] = 30
+    monkeypatch.setattr("mgb_ops.workflows.scenario_orchestrator._scenario_executor", _thread_executor)
+    captured = {}
+
+    def fake_cache(database_path, cache_dir, **kwargs):
+        captured.update(kwargs)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / kwargs["filename"]
+        path.touch()
+        return path
+
+    def fake_execute(context, scenario, *, batch_id, staging_dir, **kwargs):
+        path = staging_dir / "zero.nc"
+        path.write_bytes(b"complete")
+        return ScenarioRunResult(scenario, path, f"{batch_id}-zero")
+
+    monkeypatch.setattr("mgb_ops.workflows.scenario_orchestrator.build_observed_precipitation_cache", fake_cache)
+    monkeypatch.setattr("mgb_ops.workflows.scenario_orchestrator._execute_scenario", fake_execute)
+    artifact = CurrentRunArtifact(
+        "2026-03-12T00:00:00", "2026-03-18T00:00:00", 1,
+        {"observed_horizon_days": 30, "forecast_horizon_days": 5, "use_forecast_data": True},
+        {"bbox": [-53, -31, -50, -29], "resolution_degrees": 0.1},
+        {"nearest_stations": 5, "power": 2.0},
+        {"start": "2026-03-01T00:00:00", "end": "2026-03-12T00:00:00"},
+        ("ana",),
+    )
+    execute_forecast_scenarios(
+        context, (ForecastScenario("zero", "Zero", "zero"),),
+        observed_provider_codes=("ana",), reference_time=datetime(2026, 3, 12), artifact=artifact,
+    )
+
+    assert (captured["end_time_utc"] - captured["start_time_utc"]).total_seconds() == 721 * 3600
+
 
 
 def test_orchestrator_runs_concurrently_and_publishes_complete_batch(

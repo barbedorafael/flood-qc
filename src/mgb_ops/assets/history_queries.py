@@ -157,3 +157,30 @@ def find_asset(
         return None
     columns = (description[0] for description in cursor.description)
     return dict(zip(columns, row, strict=True))
+
+
+def read_station_reference_level_tables(
+    database_path: Path, station_id: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read optional station boundary and historical-flood reference tables."""
+    with open_history_read_only(database_path) as connection:
+        tables = {str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('station_level_reference', 'historical_flood_level')"
+        )}
+        empty = pd.DataFrame(columns=["reference_type", "level_cm", "event_date"])
+        boundaries = (
+            pd.read_sql_query(
+                "SELECT reference_code AS reference_type, level_cm, NULL AS event_date "
+                "FROM station_level_reference WHERE station_id = ?", connection,
+                params=(str(station_id),),
+            ) if "station_level_reference" in tables else empty.copy()
+        )
+        floods = (
+            pd.read_sql_query(
+                "SELECT 'historical_flood' AS reference_type, level_cm, event_date "
+                "FROM historical_flood_level WHERE station_id = ?", connection,
+                params=(str(station_id),),
+            ) if "historical_flood_level" in tables else empty.copy()
+        )
+    return boundaries, floods

@@ -1,33 +1,40 @@
-"""The mutable current-run artifact and its SQLite persistence contract.
-
-History is deliberately only read as a source.  All operational choices belong
-in this file so a saved artifact is a self-contained SQLite backup.
-"""
+"""The mutable current-run artifact and its SQLite persistence contract."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import json
+import math
+import os
 from pathlib import Path
-import shutil
+import re
 import sqlite3
 from typing import Any, Iterable, Mapping
+from uuid import uuid4
 
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction, validate_instruction
+from mgb_ops.qc.precipitation import PrecipitationQCPolicy
 
 
 _SCHEMA_TABLES = {
     "current_run", "forecast_scenario", "forecast_correction", "observed_replacement",
     "station_exclusion", "current_execution", "published_cache_reference",
 }
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _text(value: datetime | str) -> str:
-    return value.isoformat(timespec="seconds") if isinstance(value, datetime) else str(value)
+def _parse_time(value: object, *, name: str) -> datetime:
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid ISO timestamp.") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +75,6 @@ class CurrentExecution:
 @dataclass(frozen=True, slots=True)
 class CurrentRunArtifact:
     reference_time: str
-    window_start: str
     forecast_end_exclusive: str
     timestep_hours: int
     mgb_settings: dict[str, Any]
@@ -76,6 +82,9 @@ class CurrentRunArtifact:
     interpolation_settings: dict[str, Any]
     review_window: dict[str, Any]
     observed_providers: tuple[str, ...]
+    precipitation_qc_settings: dict[str, Any] = field(default_factory=lambda: PrecipitationQCPolicy().as_dict())
+    saved_run_id: str | None = None
+    saved_run_description: str | None = None
     responsible_person: str | None = None
     reason: str | None = None
     scenarios: tuple[ForecastScenarioReference, ...] = ()
@@ -84,15 +93,24 @@ class CurrentRunArtifact:
     execution: CurrentExecution = field(default_factory=CurrentExecution)
     published_caches: Mapping[str, str] = field(default_factory=dict)
 
-    def validate(self, *, require_reason: bool = False) -> CurrentRunArtifact:
-        if not self.reference_time or not self.window_start or not self.forecast_end_exclusive:
-            raise ValueError("Current artifact requires resolved reference and window timing.")
-        if self.timestep_hours < 1:
+    def validate(self, *, require_reason: bool = False) -> "CurrentRunArtifact":
+        reference = _parse_time(self.reference_time, name="reference_time")
+        forecast_end = _parse_time(self.forecast_end_exclusive, name="forecast_end_exclusive")
+        if not reference < forecast_end:
+            raise ValueError("Artifact timing must satisfy reference_time < forecast_end_exclusive.")
+        if not isinstance(self.timestep_hours, int) or isinstance(self.timestep_hours, bool) or self.timestep_hours < 1:
             raise ValueError("timestep_hours must be >= 1.")
-        if not self.observed_providers:
+        if not self.observed_providers or any(not str(value).strip() for value in self.observed_providers):
             raise ValueError("Current artifact requires at least one observed provider.")
+        PrecipitationQCPolicy.from_mapping(self.precipitation_qc_settings)
         if require_reason and (not str(self.responsible_person or "").strip() or not str(self.reason or "").strip()):
             raise ValueError("responsible_person and reason are required for operational updates.")
+        if (self.saved_run_id is None) != (self.saved_run_description is None):
+            raise ValueError("Saved-run ID and description must either both be set or both be null.")
+        if self.saved_run_id is not None:
+            validate_run_id(self.saved_run_id)
+            if not str(self.saved_run_description).strip():
+                raise ValueError("Saved-run description must be non-empty.")
         ids = [item.scenario_id for item in self.scenarios]
         if len(ids) != len(set(ids)):
             raise ValueError("Forecast scenario IDs must be unique.")
@@ -111,13 +129,54 @@ class CurrentRunArtifact:
                 validate_instruction(correction)
                 if correction.asset_id != scenario.source_asset_id:
                     raise ValueError(f"{scenario.scenario_id}: correction asset differs from scenario asset.")
-        replacement_keys = [(x.station_id, x.observed_at) for x in self.observed_replacements]
+        review_start = review_end = None
+        if self.review_window:
+            if "start" not in self.review_window or "end" not in self.review_window:
+                raise ValueError("review_window requires start and end timestamps.")
+            review_start = _parse_time(self.review_window["start"], name="review_window.start")
+            review_end = _parse_time(self.review_window["end"], name="review_window.end")
+            if review_end <= review_start:
+                raise ValueError("review_window must satisfy start < end for (start, end].")
+        replacement_keys: list[tuple[str, datetime]] = []
+        for item in self.observed_replacements:
+            if not str(item.station_id).strip():
+                raise ValueError("Observed replacements require a station_id.")
+            observed_at = _parse_time(item.observed_at, name="observed_replacement.observed_at")
+            if observed_at.minute or observed_at.second or observed_at.microsecond or observed_at.hour % self.timestep_hours:
+                raise ValueError("Observed replacement timestamps must align to the normalized timestep.")
+            if review_start is not None and not (review_start < observed_at <= review_end):
+                raise ValueError("Observed replacements must fall within the selected (start, end] review window.")
+            if item.value is not None and (isinstance(item.value, bool) or not isinstance(item.value, (int, float)) or not math.isfinite(float(item.value)) or float(item.value) < 0):
+                raise ValueError("Observed replacement values must be finite non-negative numbers or NULL.")
+            replacement_keys.append((str(item.station_id), observed_at))
         if len(replacement_keys) != len(set(replacement_keys)):
             raise ValueError("Observed replacements must be unique per station and timestamp.")
+        exclusion_keys: list[tuple[str, datetime, datetime]] = []
         for item in self.station_exclusions:
-            if not item.station_id or item.end_time <= item.start_time:
+            start = _parse_time(item.start_time, name="station_exclusion.start_time")
+            end = _parse_time(item.end_time, name="station_exclusion.end_time")
+            if not str(item.station_id).strip() or end <= start:
                 raise ValueError("Station exclusions must use a station and a non-empty (start, end] window.")
+            if review_start is None or start != review_start or end != review_end:
+                raise ValueError("Station exclusions must exactly match the selected review window.")
+            exclusion_keys.append((str(item.station_id), start, end))
+        if len(exclusion_keys) != len(set(exclusion_keys)):
+            raise ValueError("Station exclusions must be unique.")
         return self
+
+
+@dataclass(frozen=True, slots=True)
+class SavedRunArtifact:
+    run_id: str
+    description: str
+    path: Path
+
+
+def validate_run_id(run_id: str) -> str:
+    value = str(run_id or "").strip()
+    if not _SAFE_RUN_ID.fullmatch(value) or value in {".", ".."} or ".." in value:
+        raise ValueError("run_id must be path-safe and contain only letters, numbers, '.', '_' or '-'.")
+    return value
 
 
 class CurrentRunRepository:
@@ -129,9 +188,10 @@ class CurrentRunRepository:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.execute("PRAGMA busy_timeout = 30000")
+        self._migrate_columns()
         self.validate_database(self.database_path)
 
-    def __enter__(self) -> CurrentRunRepository:
+    def __enter__(self) -> "CurrentRunRepository":
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -139,6 +199,18 @@ class CurrentRunRepository:
 
     def close(self) -> None:
         self.connection.close()
+
+    def _migrate_columns(self) -> None:
+        found = {str(row[1]) for row in self.connection.execute("PRAGMA table_info(current_run)")}
+        additions = {
+            "precipitation_qc_settings_json": "TEXT NOT NULL DEFAULT '{\"threshold_mm\":50.0,\"sequence_lower_mm\":0.0,\"sequence_min_length\":5,\"sequence_upper_mm\":1.0}'",
+            "saved_run_id": "TEXT",
+            "saved_run_description": "TEXT",
+        }
+        with self.connection:
+            for name, definition in additions.items():
+                if name not in found:
+                    self.connection.execute(f"ALTER TABLE current_run ADD COLUMN {name} {definition}")
 
     @classmethod
     def validate_database(cls, database_path: Path) -> None:
@@ -168,8 +240,9 @@ class CurrentRunRepository:
         ) for item in self.connection.execute("SELECT * FROM forecast_scenario ORDER BY position"))
         execution = self.connection.execute("SELECT * FROM current_execution WHERE singleton=1").fetchone()
         return CurrentRunArtifact(
-            reference_time=str(row["reference_time"]), window_start=str(row["window_start"]), forecast_end_exclusive=str(row["forecast_end_exclusive"]), timestep_hours=int(row["timestep_hours"]),
+            reference_time=str(row["reference_time"]), forecast_end_exclusive=str(row["forecast_end_exclusive"]), timestep_hours=int(row["timestep_hours"]),
             mgb_settings=json.loads(row["mgb_settings_json"]), spatial_settings=json.loads(row["spatial_settings_json"]), interpolation_settings=json.loads(row["interpolation_settings_json"]), review_window=json.loads(row["review_window_json"]), observed_providers=tuple(json.loads(row["observed_providers_json"])),
+            precipitation_qc_settings=json.loads(row["precipitation_qc_settings_json"]), saved_run_id=row["saved_run_id"], saved_run_description=row["saved_run_description"],
             responsible_person=row["responsible_person"], reason=row["reason"], scenarios=scenarios,
             observed_replacements=tuple(ObservedReplacement(str(x["station_id"]), str(x["observed_at"]), x["value"]) for x in self.connection.execute("SELECT * FROM observed_replacement ORDER BY station_id, observed_at")),
             station_exclusions=tuple(StationExclusion(str(x["station_id"]), str(x["start_time"]), str(x["end_time"])) for x in self.connection.execute("SELECT * FROM station_exclusion ORDER BY station_id, start_time, end_time")),
@@ -183,21 +256,27 @@ class CurrentRunRepository:
 
     def replace(self, artifact: CurrentRunArtifact, *, require_reason: bool = False) -> CurrentRunArtifact:
         artifact.validate(require_reason=require_reason)
+        now = datetime.now().isoformat(timespec="seconds")
+        ids = {scenario.scenario_id for scenario in artifact.scenarios}
         with self.connection:
             self.connection.execute("DELETE FROM forecast_scenario")
             self.connection.execute("DELETE FROM observed_replacement")
             self.connection.execute("DELETE FROM station_exclusion")
             self.connection.execute("DELETE FROM current_run")
-            self.connection.execute("""INSERT INTO current_run VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""", (
-                artifact.reference_time, artifact.window_start, artifact.forecast_end_exclusive, artifact.timestep_hours,
-                _json(artifact.mgb_settings), _json(artifact.spatial_settings), _json(artifact.interpolation_settings), _json(artifact.review_window), _json(list(artifact.observed_providers)), artifact.responsible_person, artifact.reason, datetime.now().isoformat(timespec="seconds"),
+            self.connection.execute("""INSERT INTO current_run (
+                singleton,reference_time,forecast_end_exclusive,timestep_hours,
+                mgb_settings_json,spatial_settings_json,interpolation_settings_json,review_window_json,
+                observed_providers_json,precipitation_qc_settings_json,saved_run_id,saved_run_description,
+                responsible_person,reason,created_at,updated_at) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                artifact.reference_time, artifact.forecast_end_exclusive, artifact.timestep_hours,
+                _json(artifact.mgb_settings), _json(artifact.spatial_settings), _json(artifact.interpolation_settings), _json(artifact.review_window), _json(list(artifact.observed_providers)), _json(PrecipitationQCPolicy.from_mapping(artifact.precipitation_qc_settings).as_dict()),
+                artifact.saved_run_id, artifact.saved_run_description, artifact.responsible_person, artifact.reason, now, now,
             ))
-            self.connection.executemany("INSERT INTO forecast_scenario (scenario_id,position,scenario_kind,label,provider_code,source_asset_id,source_asset_path) VALUES (?,?,?,?,?,?,?)", [
-                (s.scenario_id,s.position,s.kind,s.label,s.provider_code,s.source_asset_id,s.source_asset_path) for s in artifact.scenarios])
-            self.connection.executemany("INSERT INTO forecast_correction (scenario_id,position,t0_step,t1_step,shift_lat,shift_lon,rotation_deg,multiplication_factor,metadata_json) VALUES (?,?,?,?,?,?,?,?,?)", [
-                (s.scenario_id,index,c.t0_step,c.t1_step,c.shift_lat,c.shift_lon,c.rotation_deg,c.multiplication_factor,"{}") for s in artifact.scenarios for index,c in enumerate(s.corrections)])
+            self.connection.executemany("INSERT INTO forecast_scenario (scenario_id,position,scenario_kind,label,provider_code,source_asset_id,source_asset_path) VALUES (?,?,?,?,?,?,?)", [(s.scenario_id,s.position,s.kind,s.label,s.provider_code,s.source_asset_id,s.source_asset_path) for s in artifact.scenarios])
+            self.connection.executemany("INSERT INTO forecast_correction (scenario_id,position,t0_step,t1_step,shift_lat,shift_lon,rotation_deg,multiplication_factor,metadata_json) VALUES (?,?,?,?,?,?,?,?,?)", [(s.scenario_id,index,c.t0_step,c.t1_step,c.shift_lat,c.shift_lon,c.rotation_deg,c.multiplication_factor,"{}") for s in artifact.scenarios for index,c in enumerate(s.corrections)])
             self.connection.executemany("INSERT INTO observed_replacement VALUES (?,?,?)", [(x.station_id,x.observed_at,x.value) for x in artifact.observed_replacements])
             self.connection.executemany("INSERT INTO station_exclusion VALUES (?,?,?)", [(x.station_id,x.start_time,x.end_time) for x in artifact.station_exclusions])
+            self.connection.executemany("INSERT INTO published_cache_reference (scenario_id,relative_path) VALUES (?,?)", [(scenario_id, path) for scenario_id, path in artifact.published_caches.items() if scenario_id in ids])
         return self.load()
 
     def replace_scenarios(self, scenarios: Iterable[ForecastScenarioReference], *, responsible_person: str | None = None, reason: str | None = None) -> CurrentRunArtifact:
@@ -217,16 +296,27 @@ class CurrentRunRepository:
 
 
 def create_current_artifact(database_path: Path, artifact: CurrentRunArtifact, *, schema_path: Path | None = None) -> CurrentRunArtifact:
+    """Create atomically on first use; update an existing stable artifact transactionally."""
     from mgb_ops.assets.schemas import RUN_SCHEMA_PATH
     path = Path(database_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        path.unlink()
-    with sqlite3.connect(path) as connection:
-        connection.executescript(Path(schema_path or RUN_SCHEMA_PATH).read_text(encoding="utf-8"))
-        connection.execute("INSERT INTO current_execution (singleton,status) VALUES (1,'never')")
-    with CurrentRunRepository(path) as repository:
-        return repository.replace(artifact)
+        with CurrentRunRepository(path) as repository:
+            return repository.replace(artifact)
+    seeded = artifact
+    if not str(seeded.reason or "").strip():
+        seeded = replace(seeded, reason="default precipitation replacements")
+    temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with sqlite3.connect(temp) as connection:
+            connection.executescript(Path(schema_path or RUN_SCHEMA_PATH).read_text(encoding="utf-8"))
+            connection.execute("INSERT INTO current_execution (singleton,status) VALUES (1,'never')")
+        with CurrentRunRepository(temp) as repository:
+            result = repository.replace(seeded)
+        os.replace(temp, path)
+        return result
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def load_current_artifact(database_path: Path) -> CurrentRunArtifact:
@@ -254,20 +344,35 @@ def replace_observed_instructions(database_path: Path, replacements: Iterable[Ob
 
 
 def archive_current_artifact(database_path: Path, destination: Path) -> Path:
-    """Save an explicit SQLite backup; saving is never implicit or catalogued."""
     source, target = Path(database_path), Path(destination)
     if target.exists():
         raise FileExistsError(f"Saved artifact already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(source) as source_connection, sqlite3.connect(target) as target_connection:
-        source_connection.backup(target_connection)
+    temp = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+    try:
+        with sqlite3.connect(source) as source_connection, sqlite3.connect(temp) as target_connection:
+            source_connection.backup(target_connection)
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     return target
 
 
+def save_current_artifact(database_path: Path, runs_dir: Path, *, run_id: str, description: str) -> SavedRunArtifact:
+    safe_id = validate_run_id(run_id)
+    detail = str(description or "").strip()
+    if not detail:
+        raise ValueError("description must be non-empty.")
+    target = Path(runs_dir) / f"{safe_id}.sqlite"
+    archive_current_artifact(database_path, target)
+    try:
+        with CurrentRunRepository(target) as repository:
+            saved = replace(repository.load(), saved_run_id=safe_id, saved_run_description=detail)
+            repository.replace(saved)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    return SavedRunArtifact(safe_id, detail, target)
+
+
 save_current_artifact_copy = archive_current_artifact
-
-
-def execute_current_artifact(*args: Any, **kwargs: Any):
-    """Execute this artifact through the workflow layer (lazy to avoid a cycle)."""
-    from mgb_ops.workflows.scenario_orchestrator import execute_current_artifact as execute
-    return execute(*args, **kwargs)

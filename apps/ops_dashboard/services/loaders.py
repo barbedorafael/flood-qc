@@ -56,6 +56,16 @@ def _station_rainfall_accumulations(
     )
 
 
+def _filter_model_chart_window(frame: pd.DataFrame, window: AnalysisWindow) -> pd.DataFrame:
+    if frame.empty or "dt" not in frame:
+        return frame
+    timestamps = pd.to_datetime(frame["dt"], errors="coerce")
+    return frame[
+        (timestamps >= pd.Timestamp(window.start_time))
+        & (timestamps < pd.Timestamp(window.forecast_end_exclusive))
+    ].reset_index(drop=True)
+
+
 @pn.cache(max_items=256)
 def _observed_series(
     station_id: str,
@@ -71,6 +81,7 @@ def _observed_series(
         start_time=window.start_time,
         end_time=window.cutoff_time,
     )
+
 
 
 
@@ -203,6 +214,7 @@ def _model_variables(
     return dashboard_data.list_model_variables(Path(model_path))
 
 
+
 @pn.cache(max_items=256)
 def _mgb_series(
     mini_id: int,
@@ -213,12 +225,10 @@ def _mgb_series(
     window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
-    return dashboard_data.load_mgb_series(
-        Path(model_path),
-        mini_id=mini_id,
-        variable_code=variable_code,
-        window=window,
+    frame = dashboard_data.load_mgb_series(
+        Path(model_path), mini_id=mini_id, variable_code=variable_code
     )
+    return _filter_model_chart_window(frame, window)
 
 
 def prepare_mgb_level_series(
@@ -251,6 +261,7 @@ def prepare_mgb_level_series(
     return prepared
 
 
+
 @pn.cache(max_items=256)
 def _prepared_mgb_level(
     mini_id: int,
@@ -263,8 +274,11 @@ def _prepared_mgb_level(
     """Build a cached, dashboard-only aligned level series for one mini."""
     del workspace, model_version
     station_id = dashboard_data.load_mini_station_id(mini_id, Path(database_path))
-    model_levels = dashboard_data.load_mgb_series(
-        Path(model_path), mini_id=mini_id, variable_code="level", window=window
+    model_levels = _filter_model_chart_window(
+        dashboard_data.load_mgb_series(
+            Path(model_path), mini_id=mini_id, variable_code="level"
+        ),
+        window,
     )
     if station_id is None:
         return model_levels.iloc[0:0].copy()
@@ -272,6 +286,7 @@ def _prepared_mgb_level(
         station_id, Path(database_path), start_time=window.start_time, end_time=window.cutoff_time
     )
     return prepare_mgb_level_series(model_levels, station_observed)
+
 
 
 @pn.cache(max_items=256)
@@ -284,12 +299,10 @@ def _basin_precipitation(
     window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
-    return dashboard_data.load_basin_precipitation(
-        Path(model_path),
-        mini_ids=mini_ids,
-        weights=weights,
-        window=window,
+    frame = dashboard_data.load_basin_precipitation(
+        Path(model_path), mini_ids=mini_ids, weights=weights
     )
+    return _filter_model_chart_window(frame, window)
 
 
 @pn.cache(max_items=32)

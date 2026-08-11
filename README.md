@@ -9,7 +9,7 @@ scripts, and data-flow style orchestration.
 
 The repository already provides a functional base for:
 
-- bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/current_run.sqlite`;
+- bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/cache/current_run.sqlite`;
 - ingesting ANA observations for `rain`, `level`, and `flow`;
 - ingesting ECMWF source GRIB internally and registering canonical CF-style NetCDF precipitation grids in the history database;
 - preparing metadata and timestep-aligned rainfall inputs for MGB;
@@ -132,7 +132,7 @@ timestep_hours = int(settings["run"]["timestep_hours"])
 rewrite_mgb_meta(
     parhig_path=paths.mgb_input_dir / "PARHIG.hig",
     reference_time=reference_time,
-    input_days_before=int(mgb_settings["input_days_before"]),
+    observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
@@ -144,7 +144,7 @@ prepare_mgb_rainfall(
     mini_gtp_path=paths.mgb_input_dir / "MINI.gtp",
     output_path=paths.mgb_input_dir / "chuvabin.hig",
     reference_time=reference_time,
-    input_days_before=int(mgb_settings["input_days_before"]),
+    observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     use_forecast_data=bool(mgb_settings["use_forecast_data"]),
     cache_dir=paths.cache_dir,
@@ -177,7 +177,7 @@ behavior, prefer a reusable library function first.
 
 - `<workspace>/data/history.sqlite`
   Stores station metadata, preferred observations, providers, and registered forecast assets.
-- `<workspace>/data/current_run.sqlite`
+- `<workspace>/data/cache/current_run.sqlite`
   Stores the closed state of a specific run.
 
 The run schema exists and bootstrap is implemented, but complete operational run

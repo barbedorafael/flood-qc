@@ -121,13 +121,7 @@ Library modules:
 
 ### Automatic QC
 
-The schema and states exist, but the flow to:
-
-- generate flags in `qc_flag`
-- promote `raw -> curated -> approved`
-- automatically release approved inputs
-
-is not operational yet.
+Rainfall QC findings and operator replacements are held in the current-run artifact. History remains an immutable source and contains no QC tables. Automatic promotion of normalized observations is not operational yet.
 
 ### Materialized Operational Run
 
@@ -136,11 +130,11 @@ flags, and lineage to `<workspace>/data/runs/<run_id>.sqlite` is not closed yet.
 
 ### Manual Review of Observations
 
-Manual review of observed rainfall is not implemented yet.
+The dashboard supports artifact-backed rainfall replacements and station exclusions within an explicit review window.
 
 ### Reports
 
-Generation of `report_artifact` and publication to `run_catalog` remain pending.
+Generation of durable report artifacts remains pending; history intentionally has no run catalog.
 Future reporting should be implemented as importable library behavior.
 
 ## Maintained Architectural Direction
@@ -159,14 +153,10 @@ Even with implementation gaps, the canonical direction remains:
 
 ## Multi-scenario forecast execution
 
-Operational forecast runs are derived at runtime from history.sqlite. The provider
-registry selects active forecast providers; each eligible registered asset produces
-a raw scenario, and each linked manual_edit row produces one independent corrected
-scenario. A zero-rain scenario is always included. YAML does not select
+Operational forecast scenarios are resolved once into `data/cache/current_run.sqlite`. The provider registry selects active forecast providers; each eligible registered asset produces a raw scenario, and artifact-owned correction instructions produce corrected scenarios. A zero-rain scenario is always included. YAML does not select
 forecast providers; enablement belongs exclusively to the provider registry.
 
-mgb_ops.workflows.derive_forecast_scenarios() builds immutable, transient scenario
-descriptions. mgb_ops.workflows.execute_forecast_scenarios() runs them in isolated
+`mgb_ops.workflows.derive_forecast_scenarios()` reads the resolved artifact snapshot. mgb_ops.workflows.execute_forecast_scenarios() runs them in isolated
 runner directories concurrently and publishes a complete batch only when every run
 succeeds. Dashboard artifacts are the direct NetCDF files under data/cache/forecast_scenarios/.
 The directory is atomically replaced only after a complete batch succeeds. These

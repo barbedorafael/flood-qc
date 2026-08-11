@@ -17,7 +17,7 @@ from mgb_ops.edit.forcing import ForecastCorrectionInstruction, validate_instruc
 def test_build_analysis_window_uses_reference_date_and_explicit_horizon() -> None:
     assert build_analysis_window(
         datetime(2026, 3, 17, 12),
-        output_days_before=2,
+        observed_horizon_days=2,
         forecast_horizon_days=3,
     ) == AnalysisWindow(
         start_time=datetime(2026, 3, 15),

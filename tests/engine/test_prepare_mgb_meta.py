@@ -30,7 +30,7 @@ def test_rewrite_mgb_meta_updates_parhig(tmp_path, monkeypatch) -> None:
     summary = rewrite_mgb_meta(
         parhig_path=parhig_path,
         reference_time=datetime(2026, 3, 11, 23, 0, 0),
-        input_days_before=2,
+        observed_horizon_days=2,
         forecast_horizon_days=2,
         logs_dir=tmp_path / "logs",
     )
@@ -56,7 +56,7 @@ def test_rewrite_mgb_meta_uses_configured_timestep(tmp_path) -> None:
     summary = rewrite_mgb_meta(
         parhig_path=parhig_path,
         reference_time=datetime(2026, 3, 11, 21, 0, 0),
-        input_days_before=2,
+        observed_horizon_days=2,
         forecast_horizon_days=2,
         timestep_hours=3,
     )

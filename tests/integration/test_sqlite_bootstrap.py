@@ -61,7 +61,7 @@ def test_initialize_run_db_replaces_legacy_database_with_empty_artifact_schema(t
 def test_current_artifact_create_and_load(tmp_path: Path) -> None:
     path = tmp_path / "current_run.sqlite"
     artifact = CurrentRunArtifact(
-        "2026-03-12T00:00:00", "2026-03-01T00:00:00", "2026-03-26T00:00:00", 1,
+        "2026-03-12T00:00:00", "2026-03-26T00:00:00", 1,
         {"forecast_horizon_days": 14}, {"bbox": [-53, -31, -50, -29]}, {"nearest_stations": 5},
         {"start": "2026-03-01T00:00:00", "end": "2026-03-12T00:00:00"}, ("ana", "inmet"),
         scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon"),),
@@ -69,6 +69,9 @@ def test_current_artifact_create_and_load(tmp_path: Path) -> None:
     create_current_artifact(path, artifact)
     loaded = load_current_artifact(path)
     assert loaded.reference_time == artifact.reference_time
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(current_run)")}
+    assert "window_start" not in columns
     assert loaded.scenarios[0].kind == "zero"
 
 

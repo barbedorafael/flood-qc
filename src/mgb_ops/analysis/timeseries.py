@@ -12,6 +12,7 @@ from mgb_ops.assets.history_queries import (
     open_history_read_only,
     read_station_catalog_tables,
     read_station_observed_tables,
+    read_station_reference_level_tables,
     select_preferred_series_rows,
 )
 from mgb_ops.assets.model_outputs import (
@@ -168,27 +169,7 @@ def load_mini_station_id(
 def load_station_reference_levels(station_id: str, database_path: Path) -> pd.DataFrame:
     """Return optional alert references and registered flood levels for one station."""
     boundary_order = {"attention": 0, "alert": 1, "flood": 2, "severe": 3}
-    with open_history_read_only(database_path) as connection:
-        tables = {str(row[0]) for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' "
-            "AND name IN ('station_level_reference', 'historical_flood_level')"
-        )}
-        boundaries = (
-            pd.read_sql_query(
-                "SELECT reference_code AS reference_type, level_cm, NULL AS event_date "
-                "FROM station_level_reference WHERE station_id = ?", connection, params=(str(station_id),)
-            ) if "station_level_reference" in tables else pd.DataFrame(
-                columns=["reference_type", "level_cm", "event_date"]
-            )
-        )
-        floods = (
-            pd.read_sql_query(
-                "SELECT 'historical_flood' AS reference_type, level_cm, event_date "
-                "FROM historical_flood_level WHERE station_id = ?", connection, params=(str(station_id),)
-            ) if "historical_flood_level" in tables else pd.DataFrame(
-                columns=["reference_type", "level_cm", "event_date"]
-            )
-        )
+    boundaries, floods = read_station_reference_level_tables(database_path, station_id)
     result = pd.concat([boundaries, floods], ignore_index=True)
     if result.empty:
         return pd.DataFrame(columns=["reference_type", "level_cm", "event_date"])

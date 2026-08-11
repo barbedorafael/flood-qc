@@ -90,7 +90,7 @@ def test_map_controls_are_not_in_global_sidebar(tmp_path: Path) -> None:
         sidebar_names.update(
             widget.name for widget in item.select(pn.widgets.Widget)
         )
-    assert sidebar_names == {"Refresh data"}
+    assert sidebar_names == {"Chart start time", "Refresh data"}
 
 
 def test_forecast_correction_form_adds_a_draft_row(tmp_path: Path) -> None:

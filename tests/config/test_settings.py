@@ -24,7 +24,7 @@ summaries:
   selected_mini_ids: ["7601", "7612"]
 
 mgb:
-  input_days_before: 45
+  observed_horizon_days: 45
   forecast_horizon_days: 20
 
 rainfall_interpolation:
@@ -49,6 +49,8 @@ def test_load_settings_uses_in_code_defaults_without_workspace_config(tmp_path) 
     assert settings["ingest"]["request_days"] == 90
     assert settings["ingest"]["fetch_window_days"] == 30
     assert settings["ingest"]["observed_aggregation"] == {"rain": "sum", "level": "mean", "flow": "mean"}
+    assert set(settings["mgb"]) == {"observed_horizon_days", "forecast_horizon_days", "use_forecast_data"}
+    assert settings["mgb"]["observed_horizon_days"] == 56
     assert settings["mgb"]["use_forecast_data"] is True
 
 
@@ -67,8 +69,7 @@ def test_load_settings_merges_workspace_custom_yaml(tmp_path) -> None:
     assert settings["spatial_grid"]["resolution_degrees"] == 0.25
     assert settings["summaries"]["forecast_days"] == [1, 3, 7, 14]
     assert settings["summaries"]["selected_mini_ids"] == ["7601", "7612"]
-    assert settings["mgb"]["input_days_before"] == 45
-    assert settings["mgb"]["output_days_before"] == 28
+    assert settings["mgb"]["observed_horizon_days"] == 45
     assert settings["mgb"]["forecast_horizon_days"] == 20
     assert settings["rainfall_interpolation"]["nearest_stations"] == 5
     assert settings["rainfall_interpolation"]["power"] == 3.0

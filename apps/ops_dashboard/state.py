@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import threading
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -40,12 +44,20 @@ from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.windows import build_analysis_window
 from mgb_ops.assets.model_outputs import validate_model_outputs_netcdf
 from mgb_ops.assets.scenario_cache import discover_latest_scenario_caches
+from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.assets.spatial_grid import RegularGridSpec
 from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.config.workspace import resolve_workspace_path
 from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.model.prepare_mgb_rainfall import MGB_OBSERVED_CACHE_FILENAME
-from mgb_ops.assets.current_run import CurrentRunArtifact, ForecastScenarioReference, create_current_artifact, load_current_artifact, update_current_artifact
+from mgb_ops.assets.current_run import (
+    CurrentRunArtifact, ForecastScenarioReference, ObservedReplacement, StationExclusion,
+    create_current_artifact, load_current_artifact, save_current_artifact, update_current_artifact,
+)
+from mgb_ops.analysis.observations import load_effective_observations, load_preferred_rainfall_observations
+from mgb_ops.analysis.precipitation import ObservationPolicyDraft, accumulated_leave_one_out_analysis
+from mgb_ops.qc.precipitation import PrecipitationQCPolicy, detect_suspect_precipitation
+from mgb_ops.workflows.scenario_orchestrator import execute_current_artifact
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
@@ -109,6 +121,31 @@ class DashboardState(param.Parameterized):
     comparison_scenario_ids = param.List(default=[])
     scenario_caches = param.List(default=[], precedence=-1)
 
+    start_time = param.Date(default=None, allow_None=True)
+    review_window_start = param.Date(default=None, allow_None=True)
+    review_window_end = param.Date(default=None, allow_None=True)
+    qc_threshold_mm = param.Number(default=50.0, bounds=(0, None))
+    qc_sequence_min_length = param.Integer(default=5, bounds=(1, None))
+    qc_sequence_lower_mm = param.Number(default=0.0, bounds=(0, None))
+    qc_sequence_upper_mm = param.Number(default=1.0, bounds=(0, None))
+    detected_flags = param.DataFrame(default=pd.DataFrame())
+    observed_replacement_draft = param.DataFrame(default=pd.DataFrame(columns=["station_id", "observed_at", "value"]))
+    station_exclusion_draft = param.DataFrame(default=pd.DataFrame(columns=["station_id", "start_time", "end_time"]))
+    qc_selected_station = param.String(default=None, allow_None=True)
+    qc_selected_sequence = param.String(default=None, allow_None=True)
+    qc_diagnostic_result = param.Parameter(default=None, allow_None=True)
+    qc_map_artifacts = param.Parameter(default=None, allow_None=True)
+    responsible_person = param.String(default="")
+    update_reason = param.String(default="")
+    save_run_id = param.String(default="")
+    save_run_description = param.String(default="")
+    execution_active = param.Boolean(default=False)
+    execution_progress = param.Integer(default=0, bounds=(0, 100))
+    execution_status = param.String(default="idle")
+    execution_error = param.String(default="")
+    execution_generation = param.String(default="")
+    reload_requested = param.Boolean(default=False)
+
     def __init__(
         self,
         workspace: str | Path | None = None,
@@ -124,7 +161,7 @@ class DashboardState(param.Parameterized):
         mgb_settings = self.context.settings["mgb"]
         configured_window = build_analysis_window(
             resolve_reference_time(str(run_settings["reference_time"])),
-            output_days_before=int(mgb_settings["output_days_before"]),
+            observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
             forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
         )
         self._runtime_reference_time = configured_window.cutoff_time
@@ -149,6 +186,7 @@ class DashboardState(param.Parameterized):
         params.setdefault("scenario_id", initial.scenario_id if initial else None)
         params.setdefault("comparison_scenario_ids", [cache.scenario_id for cache in initial_caches])
         self.window = self._resolve_dashboard_window(configured_window)
+        params.setdefault("start_time", self.window.start_time)
         self.observed_precipitation_path = (
             self.context.paths.cache_dir / MGB_OBSERVED_CACHE_FILENAME
         )
@@ -161,7 +199,27 @@ class DashboardState(param.Parameterized):
         params.setdefault("forecast_rainfall_hours", default_hours)
         params.setdefault("summary_previous_hours", default_hours)
         params.setdefault("summary_forecast_hours", default_hours)
+        self._artifact_path = self.context.paths.current_run_db
+        restored_artifact = load_current_artifact(self._artifact_path) if self._artifact_path.exists() else None
+        review = restored_artifact.review_window if restored_artifact is not None else {}
+        params.setdefault("review_window_start", pd.Timestamp(review.get("start", self.window.start_time)).to_pydatetime())
+        params.setdefault("review_window_end", pd.Timestamp(review.get("end", self.window.cutoff_time)).to_pydatetime())
+        qc = PrecipitationQCPolicy.from_mapping(restored_artifact.precipitation_qc_settings if restored_artifact else self.context.settings.get("precipitation_qc"))
+        params.setdefault("qc_threshold_mm", qc.threshold_mm)
+        params.setdefault("qc_sequence_min_length", qc.sequence_min_length)
+        params.setdefault("qc_sequence_lower_mm", qc.sequence_lower_mm)
+        params.setdefault("qc_sequence_upper_mm", qc.sequence_upper_mm)
+        if restored_artifact is not None:
+            params.setdefault("observed_replacement_draft", pd.DataFrame([{"station_id": x.station_id, "observed_at": x.observed_at, "value": x.value} for x in restored_artifact.observed_replacements], columns=["station_id", "observed_at", "value"]))
+            params.setdefault("station_exclusion_draft", pd.DataFrame([{"station_id": x.station_id, "start_time": x.start_time, "end_time": x.end_time} for x in restored_artifact.station_exclusions], columns=["station_id", "start_time", "end_time"]))
+            params.setdefault("responsible_person", restored_artifact.responsible_person or "")
+            params.setdefault("update_reason", restored_artifact.reason or "")
+            params.setdefault("execution_status", restored_artifact.execution.status)
+            params.setdefault("execution_error", restored_artifact.execution.error_message or "")
+            params.setdefault("execution_generation", restored_artifact.execution.execution_id or "")
         super().__init__(**params)
+        self._execution_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="observed-qc-refresh")
+        self._execution_lock = threading.Lock()
         self.refresh()
 
     @staticmethod
@@ -229,7 +287,7 @@ class DashboardState(param.Parameterized):
         self.model_path = self._scenario_cache_by_id[scenario_id].path
         self.source_versions = {
             **self.source_versions,
-            "model": dashboard_map.build_file_version(self.model_path),
+            "model": self._published_version(self.model_path),
         }
         metadata = validate_model_outputs_netcdf(self.model_path)
         self.window = metadata.get("window", self.window)
@@ -238,11 +296,14 @@ class DashboardState(param.Parameterized):
             self.source_versions["model"], self.window,
         )
 
+    def _published_version(self, path: Path) -> str:
+        return f"{dashboard_map.build_file_version(path)}|generation={self.execution_generation or 'none'}"
+
     def _versions(self) -> DashboardSources:
         return DashboardSources(
             history=dashboard_map.build_sqlite_version(self.history_path),
             spatial=dashboard_map.build_file_version(self.gpkg_path),
-            model=dashboard_map.build_file_version(self.model_path),
+            model=self._published_version(self.model_path),
         )
 
     def add_warning(self, message: str) -> None:
@@ -313,9 +374,7 @@ class DashboardState(param.Parameterized):
                     _accumulation_raster(
                         str(self._rainfall_cache_path()),
                         workspace,
-                        dashboard_map.build_file_version(
-                            self._rainfall_cache_path()
-                        ),
+                        self._published_version(self._rainfall_cache_path()),
                         self.window,
                         tuple(float(value) for value in bbox),
                         float(self.context.settings["spatial_grid"]["resolution_degrees"]),
@@ -375,7 +434,7 @@ class DashboardState(param.Parameterized):
             cache_path = self._rainfall_cache_path(rainfall_mode)
             raster = _accumulation_raster(
                 str(cache_path), str(self.workspace),
-                dashboard_map.build_file_version(cache_path), self.window,
+                self._published_version(cache_path), self.window,
                 tuple(float(value) for value in bbox),
                 float(self.context.settings["spatial_grid"]["resolution_degrees"]),
                 rainfall_hours,
@@ -518,15 +577,26 @@ class DashboardState(param.Parameterized):
             self.map_artifacts.raster_lookups if self.map_artifacts else {},
         )
 
+    def _chart_window(self) -> AnalysisWindow:
+        start = pd.Timestamp(self.start_time or self.window.start_time).to_pydatetime()
+        if start > self.window.cutoff_time:
+            raise ValueError("Dashboard start_time must not be after reference_time.")
+        return AnalysisWindow(start, self.window.cutoff_time, self.window.forecast_end_exclusive)
+
     def observed_series(self) -> pd.DataFrame:
         if self.station_id is None or not self.history_path.exists():
             return pd.DataFrame()
         return _observed_series(
-            self.station_id,
-            str(self.history_path),
-            str(self.workspace),
-            self.source_versions.get("history", ""),
-            self.window,
+            self.station_id, str(self.history_path), str(self.workspace),
+            self.source_versions.get("history", ""), self.window,
+        )
+
+    def chart_observed_series(self) -> pd.DataFrame:
+        if self.station_id is None or not self.history_path.exists():
+            return pd.DataFrame()
+        return _observed_series(
+            self.station_id, str(self.history_path), str(self.workspace),
+            self.source_versions.get("history", ""), self._chart_window(),
         )
     def station_reference_levels(self) -> pd.DataFrame:
         if self.station_id is None or not self.history_path.exists():
@@ -554,7 +624,7 @@ class DashboardState(param.Parameterized):
         if self.mini_id is None:
             return pd.DataFrame()
         model_path = self._scenario_path(scenario_id)
-        model_version = dashboard_map.build_file_version(model_path)
+        model_version = self._published_version(model_path)
         if variable_code == "level":
             return _prepared_mgb_level(
                 self.mini_id,
@@ -562,7 +632,7 @@ class DashboardState(param.Parameterized):
                 str(self.workspace),
                 model_version,
                 str(self.history_path),
-                self.window,
+                self._chart_window(),
             )
         return _mgb_series(
             self.mini_id,
@@ -570,7 +640,7 @@ class DashboardState(param.Parameterized):
             str(model_path),
             str(self.workspace),
             model_version,
-            self.window,
+            self._chart_window(),
         )
 
     def basin_spatial_data(self, mini_id: int | None = None) -> BasinSpatialData:
@@ -584,25 +654,27 @@ class DashboardState(param.Parameterized):
             self.source_versions.get("spatial", ""),
         )
 
-    def basin_precipitation(self, scenario_id: str | None = None) -> pd.DataFrame:
+    def _load_basin_precipitation(self, scenario_id: str | None, window: AnalysisWindow) -> pd.DataFrame:
         if self.mini_id is None:
             return pd.DataFrame()
         basin = self.basin_spatial_data()
         return _basin_precipitation(
-            basin.mini_ids,
-            basin.weights,
-            str(self._scenario_path(scenario_id)),
-            str(self.workspace),
-            dashboard_map.build_file_version(self._scenario_path(scenario_id)),
-            self.window,
+            basin.mini_ids, basin.weights, str(self._scenario_path(scenario_id)),
+            str(self.workspace), self._published_version(self._scenario_path(scenario_id)), window,
         )
+
+    def basin_precipitation(self, scenario_id: str | None = None) -> pd.DataFrame:
+        return self._load_basin_precipitation(scenario_id, self.window)
+
+    def chart_basin_precipitation(self, scenario_id: str | None = None) -> pd.DataFrame:
+        return self._load_basin_precipitation(scenario_id, self._chart_window())
 
     def comparison_model_series(self) -> dict[str, dict[str, pd.DataFrame]]:
         result: dict[str, dict[str, pd.DataFrame]] = {}
         for scenario_id in self.comparison_scenario_ids:
             try:
                 result[self.scenario_label(scenario_id)] = {
-                    "precipitation": self.basin_precipitation(scenario_id),
+                    "precipitation": self.chart_basin_precipitation(scenario_id),
                     "level": self.mgb_series("level", scenario_id),
                     "flow": self.mgb_series("flow", scenario_id),
                 }
@@ -772,34 +844,276 @@ class DashboardState(param.Parameterized):
         self.update_forecast_draft(pd.concat([self.forecast_draft, pd.DataFrame([row])], ignore_index=True))
         self.set_message("Correction added to artifact draft.", "success")
 
+    def _qc_policy(self) -> PrecipitationQCPolicy:
+        return PrecipitationQCPolicy(
+            threshold_mm=float(self.qc_threshold_mm),
+            sequence_min_length=int(self.qc_sequence_min_length),
+            sequence_lower_mm=float(self.qc_sequence_lower_mm),
+            sequence_upper_mm=float(self.qc_sequence_upper_mm),
+        ).validate()
+
+    def _replacement_instructions(self) -> tuple[ObservedReplacement, ...]:
+        instructions = []
+        for row in self.observed_replacement_draft.itertuples(index=False):
+            value = None if pd.isna(row.value) else float(row.value)
+            instructions.append(ObservedReplacement(str(row.station_id), pd.Timestamp(row.observed_at).isoformat(), value))
+        return tuple(instructions)
+
+    def _exclusion_instructions(self) -> tuple[StationExclusion, ...]:
+        return tuple(StationExclusion(str(row.station_id), pd.Timestamp(row.start_time).isoformat(), pd.Timestamp(row.end_time).isoformat()) for row in self.station_exclusion_draft.itertuples(index=False))
+
+    def scan_observed_precipitation(self) -> pd.DataFrame:
+        """Scan into this session only; never write flag labels or instructions."""
+        if not self.history_path.exists():
+            raise FileNotFoundError(f"History database not found: {self.history_path}")
+        start, end = pd.Timestamp(self.review_window_start), pd.Timestamp(self.review_window_end)
+        raw = load_preferred_rainfall_observations(
+            self.history_path, start_time=start.to_pydatetime(), end_time=end.to_pydatetime(),
+        )
+        result = detect_suspect_precipitation(raw, timestep_hours=int(self.context.settings["run"]["timestep_hours"]), policy=self._qc_policy())
+        effective = load_effective_observations(
+            self.history_path, start_time=start.to_pydatetime(), end_time=end.to_pydatetime(),
+            timestep_hours=int(self.context.settings["run"]["timestep_hours"]),
+            replacements=self._replacement_instructions(), exclusions=self._exclusion_instructions(),
+            require_complete_source=False,
+        )
+        lookup = {(str(row.station_id), pd.Timestamp(row.observed_at)): row for row in effective.itertuples(index=False)}
+        rows = []
+        for match in result.matches:
+            key = (match.station_id, pd.Timestamp(match.observed_at))
+            current = lookup.get(key)
+            rows.append({
+                "station_id": match.station_id, "observed_at": pd.Timestamp(match.observed_at),
+                "flag_type": match.match_type, "match_type": match.match_type,
+                "sequence_id": match.sequence_id, "raw_value": match.value,
+                "effective_value": getattr(current, "value", match.value),
+                "replacement_state": getattr(current, "replacement_state", "raw"),
+                "excluded": bool(getattr(current, "excluded", False)),
+            })
+        self.detected_flags = pd.DataFrame(rows, columns=[
+            "station_id", "observed_at", "flag_type", "match_type", "sequence_id",
+            "raw_value", "effective_value", "replacement_state", "excluded",
+        ])
+        self.qc_map_artifacts = dashboard_map.build_qc_station_map(
+            self.stations, self.detected_flags, self.observed_replacement_draft,
+            self.station_exclusion_draft, selected_station=self.qc_selected_station,
+        )
+        self.set_message(f"Detected {len(self.detected_flags)} precipitation QC matches in this session.", "success")
+        return self.detected_flags
+
+    scan_precipitation_qc = scan_observed_precipitation
+
+    def set_observed_replacement(self, station_id: str, observed_at: datetime | str, value: float | None) -> None:
+        if value is not None and (not pd.notna(value) or not math.isfinite(float(value)) or float(value) < 0):
+            raise ValueError("Replacement must be NULL or a finite non-negative value.")
+        timestamp = pd.Timestamp(observed_at).isoformat()
+        frame = self.observed_replacement_draft.copy()
+        if frame.empty:
+            frame = pd.DataFrame(columns=["station_id", "observed_at", "value"])
+        mask = (frame["station_id"].astype(str) == str(station_id)) & (pd.to_datetime(frame["observed_at"]) == pd.Timestamp(timestamp)) if not frame.empty else pd.Series(dtype=bool)
+        row = {"station_id": str(station_id), "observed_at": timestamp, "value": value}
+        if len(mask) and mask.any():
+            frame.loc[mask, ["station_id", "observed_at", "value"]] = [str(station_id), timestamp, value]
+        else:
+            frame = pd.concat([frame, pd.DataFrame([row])], ignore_index=True)
+        self.observed_replacement_draft = frame.sort_values(["station_id", "observed_at"]).reset_index(drop=True)
+
+    apply_observed_replacement = set_observed_replacement
+
+    def remove_observed_replacement(self, station_id: str, observed_at: datetime | str) -> None:
+        frame = self.observed_replacement_draft.copy()
+        if frame.empty:
+            return
+        mask = (frame["station_id"].astype(str) == str(station_id)) & (pd.to_datetime(frame["observed_at"]) == pd.Timestamp(observed_at))
+        self.observed_replacement_draft = frame.loc[~mask].reset_index(drop=True)
+
+    remove_observed_instruction = remove_observed_replacement
+
+    def replace_selected_sequence(self, sequence_id: str | None = None, value: float | None = 0.0) -> int:
+        selected = sequence_id or self.qc_selected_sequence
+        matches = self.detected_flags[self.detected_flags["sequence_id"].astype(str) == str(selected)] if not self.detected_flags.empty else pd.DataFrame()
+        if matches.empty:
+            raise ValueError("Select a detected sequence first.")
+        for row in matches.itertuples(index=False):
+            self.set_observed_replacement(row.station_id, row.observed_at, value)
+        return len(matches)
+
+    def exclude_station(self, station_id: str | None = None) -> None:
+        selected = station_id or self.qc_selected_station
+        if not selected:
+            raise ValueError("Select a station first.")
+        self.include_station(selected)
+        row = {"station_id": str(selected), "start_time": pd.Timestamp(self.review_window_start).isoformat(), "end_time": pd.Timestamp(self.review_window_end).isoformat()}
+        self.station_exclusion_draft = pd.concat([self.station_exclusion_draft, pd.DataFrame([row])], ignore_index=True)
+
+    def include_station(self, station_id: str | None = None) -> None:
+        selected = station_id or self.qc_selected_station
+        if not selected or self.station_exclusion_draft.empty:
+            return
+        self.station_exclusion_draft = self.station_exclusion_draft[self.station_exclusion_draft["station_id"].astype(str) != str(selected)].reset_index(drop=True)
+
+    def run_leave_one_out(self, station_id: str | None = None):
+        selected = station_id or self.qc_selected_station
+        if not selected:
+            raise ValueError("Select a station for leave-one-out analysis.")
+        self.qc_diagnostic_result = accumulated_leave_one_out_analysis(
+            self.history_path, start_time=pd.Timestamp(self.review_window_start).to_pydatetime(),
+            end_time=pd.Timestamp(self.review_window_end).to_pydatetime(),
+            policy_draft=ObservationPolicyDraft(self._replacement_instructions(), self._exclusion_instructions()),
+            selected_station=str(selected), grid=self._analysis_grid(),
+            nearest_stations=int(self.context.settings["rainfall_interpolation"]["nearest_stations"]),
+            power=float(self.context.settings["rainfall_interpolation"]["power"]),
+            timestep_hours=int(self.context.settings["run"]["timestep_hours"]),
+        )
+        return self.qc_diagnostic_result
+
+    def _scenarios_with_forecast_draft(self, artifact: CurrentRunArtifact) -> tuple[ForecastScenarioReference, ...]:
+        if not self.forecast_asset_id:
+            return artifact.scenarios
+        rows = validate_forecast_edit_draft(self.forecast_asset_id, self.forecast_draft)
+        scenarios = [item for item in artifact.scenarios if not (item.kind == "corrected" and item.source_asset_id == self.forecast_asset_id)]
+        corrections = tuple(ForecastCorrectionInstruction(
+            asset_id=self.forecast_asset_id, t0_step=row["t0_step"], t1_step=row["t1_step"],
+            shift_lat=row["shift_lat"], shift_lon=row["shift_lon"], rotation_deg=row["rotation_deg"],
+            multiplication_factor=row["multiplication_factor"],
+        ) for row in rows)
+        if corrections:
+            source = next((item for item in scenarios if item.source_asset_id == self.forecast_asset_id), None)
+            if source is None:
+                raise ValueError("Selected asset is not a resolved artifact scenario.")
+            scenarios.append(ForecastScenarioReference(
+                f"corrected:{self.forecast_asset_id}", len(scenarios), "corrected",
+                f"{source.provider_code.upper()} corrected - {self.forecast_asset_id}",
+                source.provider_code, source.source_asset_id, source.source_asset_path, corrections,
+            ))
+        return tuple(replace(item, position=index) for index, item in enumerate(scenarios))
+
     def _dashboard_artifact(self) -> CurrentRunArtifact:
         path = self.context.paths.current_run_db
-        if path.exists(): return load_current_artifact(path)
+        if path.exists():
+            return load_current_artifact(path)
         refs = [ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon")]
         for position, row in enumerate(self.forecast_assets.itertuples(), 1):
             refs.append(ForecastScenarioReference(f"raw:{row.asset_id}", position, "raw", f"{row.provider_code.upper()} raw - {row.asset_id}", str(row.provider_code), str(row.asset_id), str(row.asset_path)))
-        observed = ("ana", "inmet")
-        return create_current_artifact(path, CurrentRunArtifact(self._runtime_reference_time.isoformat(timespec="seconds"), self.window.start_time.isoformat(timespec="seconds"), self.window.forecast_end_exclusive.isoformat(timespec="seconds"), int(self.context.settings["run"]["timestep_hours"]), dict(self.context.settings["mgb"]), dict(self.context.settings["spatial_grid"]), dict(self.context.settings["rainfall_interpolation"]), {"start": self.window.start_time.isoformat(), "end": self.window.cutoff_time.isoformat()}, observed, scenarios=tuple(refs)))
+        return CurrentRunArtifact(
+            self._runtime_reference_time.isoformat(timespec="seconds"),
+            self.window.forecast_end_exclusive.isoformat(timespec="seconds"), int(self.context.settings["run"]["timestep_hours"]),
+            dict(self.context.settings["mgb"]), dict(self.context.settings["spatial_grid"]), dict(self.context.settings["rainfall_interpolation"]),
+            {"start": pd.Timestamp(self.review_window_start).isoformat(), "end": pd.Timestamp(self.review_window_end).isoformat()},
+            ("ana", "inmet"), precipitation_qc_settings=self._qc_policy().as_dict(), scenarios=tuple(refs),
+        )
 
-    def save_forecast_corrections(self, *, responsible_person: str = "", reason: str = "") -> list[dict[str, Any]]:
-        if not self.forecast_asset_id: raise ValueError("Select a forecast asset first.")
+    def apply_forecast_draft(self, *, responsible_person: str = "", reason: str = "") -> list[dict[str, Any]]:
+        """Validate and stage forecast corrections; centralized Update performs the write."""
+        if not self.forecast_asset_id:
+            raise ValueError("Select a forecast asset first.")
         try:
             rows = validate_forecast_edit_draft(self.forecast_asset_id, self.forecast_draft)
-            artifact = self._dashboard_artifact()
-            scenarios = [item for item in artifact.scenarios if not (item.kind == "corrected" and item.source_asset_id == self.forecast_asset_id)]
-            corrections = tuple(ForecastCorrectionInstruction(asset_id=self.forecast_asset_id, t0_step=row["t0_step"], t1_step=row["t1_step"], shift_lat=row["shift_lat"], shift_lon=row["shift_lon"], rotation_deg=row["rotation_deg"], multiplication_factor=row["multiplication_factor"]) for row in rows)
-            if corrections:
-                source = next((item for item in scenarios if item.source_asset_id == self.forecast_asset_id), None)
-                if source is None: raise ValueError("Selected asset is not a resolved artifact scenario.")
-                scenarios.append(ForecastScenarioReference(f"corrected:{self.forecast_asset_id}", len(scenarios), "corrected", f"{source.provider_code.upper()} corrected - {self.forecast_asset_id}", source.provider_code, source.source_asset_id, source.source_asset_path, corrections))
-            artifact = replace(artifact, scenarios=tuple(replace(item, position=index) for index, item in enumerate(scenarios)), responsible_person=responsible_person.strip() or None, reason=reason.strip() or None)
-            update_current_artifact(self.context.paths.current_run_db, artifact, require_reason=True)
         except ValueError as exc:
             self.set_message(str(exc), "warning")
             raise
-        self.load_forecast_draft()
-        self.set_message("Corrections persisted to current_run.sqlite.", "success")
+        if responsible_person:
+            self.responsible_person = responsible_person.strip()
+        if reason:
+            self.update_reason = reason.strip()
+        self.set_message("Forecast corrections applied to the session artifact draft.", "success")
         return rows
+
+    def save_forecast_corrections(self, *, responsible_person: str = "", reason: str = "") -> list[dict[str, Any]]:
+        """Compatibility API; the Forecast tab uses apply_forecast_draft instead."""
+        rows = self.apply_forecast_draft(responsible_person=responsible_person, reason=reason)
+        self.update_current_run()
+        return rows
+
+    def update_current_run(self) -> CurrentRunArtifact:
+        base = self._dashboard_artifact()
+        review = {"start": pd.Timestamp(self.review_window_start).isoformat(), "end": pd.Timestamp(self.review_window_end).isoformat()}
+        artifact = replace(
+            base, review_window=review, precipitation_qc_settings=self._qc_policy().as_dict(),
+            observed_replacements=self._replacement_instructions(), station_exclusions=self._exclusion_instructions(),
+            scenarios=self._scenarios_with_forecast_draft(base), responsible_person=self.responsible_person.strip() or None,
+            reason=self.update_reason.strip() or None, saved_run_id=None, saved_run_description=None,
+        )
+        artifact.validate(require_reason=True)
+        if self.context.paths.current_run_db.exists():
+            persisted = update_current_artifact(self.context.paths.current_run_db, artifact, require_reason=True)
+        else:
+            persisted = create_current_artifact(self.context.paths.current_run_db, artifact)
+        self.set_message("Current run updated transactionally.", "success")
+        return persisted
+
+    def save_run(self):
+        result = save_current_artifact(
+            self.context.paths.current_run_db, self.context.paths.runs_dir,
+            run_id=self.save_run_id, description=self.save_run_description,
+        )
+        self.set_message(f"Saved run {result.run_id}.", "success")
+        return result
+
+    def artifact_summary(self) -> dict[str, Any]:
+        artifact = load_current_artifact(self.context.paths.current_run_db)
+        return {
+            "reference_time": artifact.reference_time,
+            "forecast_end_exclusive": artifact.forecast_end_exclusive,
+            "providers": list(artifact.observed_providers), "scenarios": len(artifact.scenarios),
+            "replacements": len(artifact.observed_replacements), "exclusions": len(artifact.station_exclusions),
+            "responsible_person": artifact.responsible_person, "reason": artifact.reason,
+        }
+
+    def _dispatch_document(self, callback) -> None:
+        try:
+            import panel as pn
+            document = pn.state.curdoc
+            if document is not None and getattr(document, "session_context", None) is not None:
+                document.add_next_tick_callback(callback)
+                return
+        except Exception:
+            pass
+        callback()
+
+    def run_current_artifact_async(self):
+        if self.execution_active:
+            raise RuntimeError("This session already has an active current-run execution.")
+        if not self.context.paths.current_run_db.exists():
+            raise FileNotFoundError("Update Current Run before executing Refresh.")
+        self.execution_active = True
+        self.execution_progress = 5
+        self.execution_status = "running"
+        self.execution_error = ""
+        future = self._execution_pool.submit(execute_current_artifact, self.context, self.context.paths.current_run_db)
+
+        def finish(completed) -> None:
+            try:
+                completed.result()
+            except BaseException as exc:
+                def fail() -> None:
+                    artifact = load_current_artifact(self.context.paths.current_run_db)
+                    self.execution_active = False
+                    self.execution_progress = 0
+                    self.execution_status = "failed"
+                    self.execution_error = artifact.execution.error_message or str(exc)
+                    self.set_message(self.execution_error, "danger")
+                self._dispatch_document(fail)
+                return
+
+            def succeed() -> None:
+                artifact = load_current_artifact(self.context.paths.current_run_db)
+                self.execution_active = False
+                self.execution_progress = 100
+                self.execution_status = "completed"
+                self.execution_generation = artifact.execution.execution_id or ""
+                self.source_versions = {**self.source_versions, "execution_generation": self.execution_generation}
+                self.reload_requested = True
+                try:
+                    import panel as pn
+                    if pn.state.location is not None:
+                        pn.state.location.reload = True
+                except Exception:
+                    pass
+            self._dispatch_document(succeed)
+
+        future.add_done_callback(finish)
+        return future
 
     def set_message(self, text: str, kind: str = "info") -> None:
         self.message = text

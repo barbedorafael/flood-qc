@@ -104,7 +104,7 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         output_dir=dataset["output_dir"],
         output_nc_path=output_nc_path,
         logs_dir=tmp_path / "logs",
-        output_days_before=30,
+        observed_horizon_days=30,
         forecast_horizon_days=15,
         chunk_hours=24,
         scenario_metadata={
@@ -196,7 +196,7 @@ def test_export_mgb_outputs_uses_explicit_reference_time(tmp_path, monkeypatch) 
         output_dir=dataset["output_dir"],
         output_nc_path=tmp_path / "model_outputs.nc",
         logs_dir=tmp_path / "logs",
-        output_days_before=30,
+        observed_horizon_days=30,
         forecast_horizon_days=15,
     )
 
@@ -218,7 +218,7 @@ def test_export_mgb_outputs_requires_single_source_file(tmp_path, monkeypatch) -
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=30,
+            observed_horizon_days=30,
             forecast_horizon_days=15,
         )
 
@@ -235,7 +235,7 @@ def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) ->
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=30,
+            observed_horizon_days=30,
             forecast_horizon_days=15,
         )
 
@@ -252,7 +252,7 @@ def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, 
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=30,
+            observed_horizon_days=30,
             forecast_horizon_days=15,
         )
 
@@ -270,7 +270,7 @@ def test_export_mgb_outputs_rejects_malformed_chuvabin(tmp_path, monkeypatch) ->
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=30,
+            observed_horizon_days=30,
             forecast_horizon_days=15,
         )
 
@@ -290,7 +290,7 @@ def test_export_mgb_outputs_rejects_packed_integer_overflow(tmp_path, monkeypatc
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=1,
+            observed_horizon_days=1,
             forecast_horizon_days=0,
         )
 
@@ -308,7 +308,7 @@ def test_export_mgb_outputs_allows_cutoff_at_last_available_timestamp(tmp_path, 
         output_dir=dataset["output_dir"],
         output_nc_path=output_nc_path,
         logs_dir=tmp_path / "logs",
-        output_days_before=1,
+        observed_horizon_days=1,
         forecast_horizon_days=0,
     )
 
@@ -332,7 +332,7 @@ def test_export_mgb_outputs_rejects_cutoff_before_available_range(tmp_path, monk
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=1,
+            observed_horizon_days=1,
             forecast_horizon_days=0,
         )
 
@@ -349,6 +349,6 @@ def test_export_mgb_outputs_rejects_cutoff_after_available_range(tmp_path, monke
             chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
-            output_days_before=1,
+            observed_horizon_days=1,
             forecast_horizon_days=0,
         )

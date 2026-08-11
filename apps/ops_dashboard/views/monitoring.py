@@ -177,7 +177,7 @@ def _monitoring_view(
         controller.param.scenario_id,
     )
     def comparison_plot(*_: Any) -> pn.viewable.Viewable:
-        observed = controller.observed_series()
+        observed = controller.chart_observed_series()
         model_series = controller.comparison_model_series()
         return pn.pane.Plotly(
             _comparison_chart(
@@ -198,6 +198,7 @@ def _monitoring_view(
         controller.param.mini_id,
         controller.param.source_versions,
         controller.param.comparison_scenario_ids,
+        controller.param.start_time,
     )
     return pn.Column(
         pn.Card(
