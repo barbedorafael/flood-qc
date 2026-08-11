@@ -12,9 +12,6 @@ from apps.ops_dashboard.views.summaries import _network_summary
 
 
 def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
-    chart_start = pn.widgets.DatetimeInput.from_param(
-        state.param.start_time, name="Chart start time", sizing_mode="stretch_width"
-    )
     refresh = pn.widgets.Button(
         name="Refresh data", button_type="primary", icon="refresh", sizing_mode="stretch_width",
     )
@@ -36,18 +33,23 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
     )
     tabs = pn.Tabs(
         ("Monitoring", _monitoring_view(state)),
-        ("Forecast", _forecast_view(state)),
-        ("Observed Precipitation QC", _observed_qc_view(state)),
+        ("Observed QC", _observed_qc_view(state)),
+        ("Forecast QC", _forecast_view(state)),
         dynamic=True, sizing_mode="stretch_width",
     )
     template = pn.template.FastListTemplate(
         title="Operational Hydrology",
-        sidebar=[pn.pane.Markdown("## Controls"), chart_start, refresh, refreshed, pn.layout.Divider(), warnings],
-        main=[
+        sidebar=[
             pn.pane.Markdown("# Operational MGB System\nObserved and forecasted hydrological data for the operation of MGB results."),
             pn.bind(lambda stations: _network_summary(stations, state.window.cutoff_time), state.param.stations),
-            tabs,
+            pn.layout.Divider(),
+            pn.pane.Markdown("## Controls"),
+            refresh,
+            refreshed,
+            pn.layout.Divider(),
+            warnings,
         ],
+        main=[tabs],
         sidebar_width=320, accent_base_color="#1864ab", header_background="#1864ab",
     )
     summary = pn.pane.JSON({}, name="Validated current artifact", depth=2, sizing_mode="stretch_width")

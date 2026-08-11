@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import panel as pn
 
 from apps.ops_dashboard.views.summaries import (
     _network_summary,
@@ -67,6 +68,7 @@ def test_network_summary_includes_reference_time_with_station_totals() -> None:
         pd.DataFrame(),
         pd.Timestamp("2026-06-01 02:00"),
     )
+    assert isinstance(summary, pn.Column)
     cards = [card[0].object for card in summary]
 
     assert "01/06/2026 02:00" in cards[0]

@@ -200,6 +200,11 @@ def _monitoring_view(
         controller.param.comparison_scenario_ids,
         controller.param.start_time,
     )
+    chart_start = pn.widgets.DatetimeInput.from_param(
+        controller.param.start_time,
+        name="Chart start time",
+        sizing_mode="stretch_width",
+    )
     return pn.Column(
         pn.Card(
             pn.Row(
@@ -224,6 +229,7 @@ def _monitoring_view(
             sizing_mode="stretch_width",
         ),
         pn.Card(
+            chart_start,
             comparison,
             title="Observed and Modeled Comparison",
             sizing_mode="stretch_width",

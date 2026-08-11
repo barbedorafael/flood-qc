@@ -90,7 +90,24 @@ def test_map_controls_are_not_in_global_sidebar(tmp_path: Path) -> None:
         sidebar_names.update(
             widget.name for widget in item.select(pn.widgets.Widget)
         )
-    assert sidebar_names == {"Chart start time", "Refresh data"}
+    assert sidebar_names == {"Refresh data"}
+
+
+def test_tab_labels_and_order_match_quality_control_workflow(tmp_path: Path) -> None:
+    template = create_dashboard(tmp_path)
+
+    tabs = next(item for item in template.main if isinstance(item, pn.Tabs))
+
+    assert list(tabs._names) == ["Monitoring", "Observed QC", "Forecast QC"]
+
+
+def test_chart_start_time_is_scoped_to_comparison_card(tmp_path: Path) -> None:
+    state = DashboardState(tmp_path)
+    monitoring = _monitoring_view(state)
+
+    widgets = {widget.name for widget in monitoring.select(pn.widgets.Widget)}
+
+    assert "Chart start time" in widgets
 
 
 def test_forecast_correction_form_adds_a_draft_row(tmp_path: Path) -> None:

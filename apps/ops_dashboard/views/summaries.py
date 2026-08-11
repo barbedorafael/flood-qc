@@ -47,7 +47,7 @@ def _network_summary(
         ("Mean rainfall 24h", _format_number(values[4], "mm")),
         ("P90 rainfall 24h", _format_number(values[5], "mm")),
     ]
-    return pn.Row(
+    return pn.Column(
         *[
             pn.Card(
                 pn.pane.HTML(
@@ -55,13 +55,12 @@ def _network_summary(
                     f"<strong style='font-size:1.15rem'>{value}</strong><br>{label}</div>"
                 ),
                 hide_header=True,
-                width=145,
+                sizing_mode="stretch_width",
                 margin=3,
             )
             for label, value in cards
         ],
         sizing_mode="stretch_width",
-        styles={"overflow-x": "auto", "flex-wrap": "nowrap"},
     )
 
 
