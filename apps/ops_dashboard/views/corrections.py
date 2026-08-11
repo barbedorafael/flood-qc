@@ -18,8 +18,8 @@ def _correction_table(state: DashboardState) -> pn.widgets.Tabulator:
         height=260,
         hidden_columns=["asset_id", "metadata_json"],
         editors={
-            "manual_edit_id": None,
-            "created_at": None,
+            "correction_id": None,
+
             "t0_step": {"type": "number", "min": 0, "step": 1},
             "t1_step": {"type": "number", "min": 0, "step": 1},
             "shift_lat": {"type": "number", "step": 1},

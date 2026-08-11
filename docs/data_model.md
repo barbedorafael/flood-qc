@@ -84,37 +84,13 @@ temporal resolution after an all-touched crop of the model bbox buffered by
 in-memory contracts; reusable interpolation and resampling live in
 `mgb_ops.assets.grid_transforms`.
 
-### `qc_flag`
+## Current Run Artifact
 
-Canonical structure for quality flags without overwriting the original data. The schema is implemented, but automatic QC does not yet populate this table operationally.
+`<workspace>/data/current_run.sqlite` is the sole mutable operational artifact. It contains one resolved run configuration, ordered scenario references and their correction transforms, observed replacements, `(start, end]` station exclusions, the current execution state, and published-cache references.
 
-### `manual_edit`
+History is immutable operational input: preferred observations, stations, providers, and registered forecast assets only. It contains no QC flags, edits, or run catalog. Saved runs are explicit SQLite backup copies of `current_run.sqlite` and are never registered in history.
 
-In the current history database, this table is used for manual GRIB2 forecast corrections by asset and time window. There is no equivalent implemented contract yet for manual correction of observed rainfall.
-
-### `run_catalog`
-
-Index of published or available runs. The schema exists, but the current flow does not populate the catalog yet.
-
-## Main Run Entities
-
-The run database is still modeled to store:
-
-- run header in `run`;
-- local input copy in `run_input_series` and `run_input_value`;
-- run assets in `run_asset`;
-- operational derivatives in `derived_series` and `derived_value`;
-- model execution in `model_execution`;
-- operational subset of MGB outputs in `mgb_output_series` and `mgb_output_value`;
-- local flags, edits, and report artifacts.
-
-This contract remains valid, but the repository layer and run assembly are still incomplete in this phase.
-
-## Separation Between History and Complete Outputs
-
-Complete MGB output remains outside SQLite, in the canonical runner binaries:
-
-- `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
+Artifact corrections have no per-edit editor or reason. Responsibility and required reason are run-level fields.
 - `<workspace>/mgb_runner/Output/YTUDO.MGB`
 
 Library readers use these binaries with support from:

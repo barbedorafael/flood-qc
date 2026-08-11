@@ -19,10 +19,22 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
+        if Path(schema_path).name == "history_schema.sql":
+            _remove_history_legacy_entities(connection)
         connection.executescript(schema_sql)
         _migrate_station_mini_id(connection)
         _migrate_station_level_reference(connection)
         connection.commit()
+
+
+def _remove_history_legacy_entities(connection: sqlite3.Connection) -> None:
+    """Destructively discard pre-artifact operational state from history."""
+    for trigger in ("trg_manual_edit_no_overlap_insert", "trg_manual_edit_no_overlap_update"):
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for index in ("idx_qc_flag_scope", "idx_manual_edit_asset_step", "idx_run_catalog_status"):
+        connection.execute(f"DROP INDEX IF EXISTS {index}")
+    for table in ("qc_flag", "manual_edit", "run_catalog"):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 def _migrate_station_mini_id(connection: sqlite3.Connection) -> None:
@@ -406,13 +418,13 @@ def initialize_history_db(
 
 
 def initialize_run_db(run_id: str, database_path: Path, schema_path: Path) -> Path:
+    """Create a fresh current artifact database; legacy contents are discarded."""
     target = Path(database_path)
+    del run_id
+    if target.exists():
+        target.unlink()
     apply_schema(target, Path(schema_path))
     with sqlite3.connect(target) as connection:
-        connection.execute(
-            "INSERT OR IGNORE INTO run (run_id, reference_time, run_kind, status, parent_run_id, operator, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (run_id, run_id, "automatic", "draft", None, None, None),
-        )
+        connection.execute("INSERT INTO current_execution (singleton, status) VALUES (1, 'never')")
         connection.commit()
     return target

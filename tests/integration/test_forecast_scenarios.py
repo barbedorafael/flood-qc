@@ -9,230 +9,35 @@ from threading import Barrier
 import numpy as np
 import pytest
 
-from mgb_ops.assets.databases import initialize_history_db
-from mgb_ops.assets.history import HistoryRepository
+from mgb_ops.assets.current_run import CurrentRunArtifact, ForecastScenarioReference, create_current_artifact
 from mgb_ops.assets.model_outputs import write_model_outputs_netcdf
-from mgb_ops.assets.scenario_cache import (
-    discover_latest_scenario_caches,
-    scenario_cache_root,
-)
-from mgb_ops.assets.schemas import SQL_DIR
-from mgb_ops.assets.spatial_grid import write_spatial_grid
+from mgb_ops.assets.scenario_cache import discover_latest_scenario_caches, scenario_cache_root
 from mgb_ops.config.env import RuntimeEnv
 from mgb_ops.config.runtime import RuntimeContext
 from mgb_ops.config.settings import DEFAULT_SETTINGS
 from mgb_ops.config.workspace import RuntimePaths
-from mgb_ops.workflows.forecast import list_enabled_forecast_providers
-from mgb_ops.workflows.scenario_orchestrator import (
-    ScenarioBatchError,
-    ScenarioRunResult,
-    execute_forecast_scenarios,
-)
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction
+from mgb_ops.workflows.scenario_orchestrator import ScenarioBatchError, ScenarioRunResult, execute_forecast_scenarios
 from mgb_ops.workflows.scenarios import ForecastScenario, derive_forecast_scenarios
 
 
-def _history(tmp_path: Path) -> Path:
-    inventory = Path(__file__).parents[1] / "fixtures" / "history_station_inventory.csv"
-    return initialize_history_db(
-        tmp_path / "data" / "history.sqlite",
-        inventory,
-        SQL_DIR / "history_schema.sql",
-    )
-
-
-def _forecast_asset(
-    tmp_path: Path,
-    provider: str = "ecmwf",
-    *,
-    cycle_time: datetime = datetime(2026, 3, 12, tzinfo=timezone.utc),
-) -> tuple[Path, str]:
-    cycle_label = cycle_time.strftime("%Y%m%dT%H%M%SZ")
-    asset_id = f"{provider}.test.{cycle_label}"
-    path = tmp_path / "data" / "assets" / f"{provider}.{cycle_label}.nc"
-    bounds = [
-        (
-            datetime(2026, 3, 12, 0, tzinfo=timezone.utc),
-            datetime(2026, 3, 12, 3, tzinfo=timezone.utc),
+def test_scenarios_are_read_from_the_current_artifact_snapshot(tmp_path: Path) -> None:
+    database = tmp_path / "data" / "current_run.sqlite"
+    create_current_artifact(database, CurrentRunArtifact(
+        "2026-03-12T00:00:00", "2026-03-01T00:00:00", "2026-03-26T00:00:00", 1,
+        {}, {}, {}, {}, ("ana",), responsible_person="operator", reason="forecast review",
+        scenarios=(
+            ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon"),
+            ForecastScenarioReference("raw:asset", 1, "raw", "ECMWF raw", "ecmwf", "asset", "data/assets/asset.nc"),
+            ForecastScenarioReference("corrected:asset", 2, "corrected", "ECMWF corrected", "ecmwf", "asset", "data/assets/asset.nc", (
+                ForecastCorrectionInstruction("asset", 0, 3, multiplication_factor=2),
+            )),
         ),
-        (
-            datetime(2026, 3, 12, 3, tzinfo=timezone.utc),
-            datetime(2026, 3, 12, 6, tzinfo=timezone.utc),
-        ),
-    ]
-    write_spatial_grid(
-        path,
-        variable="precipitation",
-        grid_type="forecast",
-        source="cropped_from_native_grid",
-        providers=[provider],
-        units="mm",
-        bbox=(-52.0, -31.0, -51.0, -30.0),
-        resolution_degrees=0.5,
-        times_utc=[right for _, right in bounds],
-        time_bounds_utc=bounds,
-        latitudes=np.array([-30.75, -30.25]),
-        longitudes=np.array([-51.75, -51.25]),
-        values=np.ones((2, 2, 2)),
-        timestep_hours=None,
-    )
-    return path, asset_id
-
-
-def test_enabled_provider_registry_and_scenario_derivation(tmp_path: Path) -> None:
-    database = _history(tmp_path)
-    path, asset_id = _forecast_asset(tmp_path)
-    with HistoryRepository(database) as repository:
-        repository.connection.execute(
-            "UPDATE provider SET is_active = 0 WHERE provider_code = 'noaa'"
-        )
-        repository.connection.commit()
-        repository.upsert_asset(
-            asset_id=asset_id,
-            asset_kind="spatial_grid",
-            format="NetCDF",
-            relative_path=path.relative_to(tmp_path).as_posix(),
-            provider_code="ecmwf",
-            valid_from="2026-03-12T00:00:00Z",
-            valid_to="2026-03-12T06:00:00Z",
-            metadata={
-                "type": "forecast",
-                "cycle_time": "2026-03-12T00:00:00Z",
-            },
-        )
-        repository.replace_forecast_manual_edits(
-            asset_id,
-            [
-                {
-                    "t0_step": 0,
-                    "t1_step": 3,
-                    "multiplication_factor": 2,
-                    "reason": "wet adjustment",
-                }
-            ],
-        )
-
-    assert list_enabled_forecast_providers(database) == ("ecmwf",)
-    scenarios = derive_forecast_scenarios(
-        database,
-        tmp_path,
-        required_start=datetime(2026, 3, 12),
-        required_end=datetime(2026, 3, 12, 6),
-    )
-    assert [item.kind for item in scenarios] == ["zero", "raw", "corrected"]
-    assert scenarios[1].asset_id == asset_id
-    assert scenarios[2].correction is not None
-    assert scenarios[2].correction.multiplication_factor == 2
-
-
-def _register_forecast_asset(
-    database: Path,
-    workspace: Path,
-    *,
-    path: Path,
-    asset_id: str,
-    provider: str,
-    cycle_time: str,
-    valid_to: str = "2026-03-12T06:00:00Z",
-) -> None:
-    with HistoryRepository(database) as repository:
-        repository.upsert_asset(
-            asset_id=asset_id,
-            asset_kind="spatial_grid",
-            format="NetCDF",
-            relative_path=path.relative_to(workspace).as_posix(),
-            provider_code=provider,
-            valid_from="2026-03-12T00:00:00Z",
-            valid_to=valid_to,
-            metadata={"type": "forecast", "cycle_time": cycle_time},
-        )
-
-
-def test_scenarios_use_latest_covering_cycle_and_its_corrections_only(
-    tmp_path: Path,
-) -> None:
-    database = _history(tmp_path)
-    old_path, old_asset_id = _forecast_asset(
-        tmp_path, cycle_time=datetime(2026, 3, 11, 18, tzinfo=timezone.utc)
-    )
-    latest_path, latest_asset_id = _forecast_asset(
-        tmp_path, cycle_time=datetime(2026, 3, 12, tzinfo=timezone.utc)
-    )
-    unavailable_path, unavailable_asset_id = _forecast_asset(
-        tmp_path, cycle_time=datetime(2026, 3, 12, 6, tzinfo=timezone.utc)
-    )
-    with HistoryRepository(database) as repository:
-        repository.connection.execute(
-            "UPDATE provider SET is_active = 0 WHERE provider_code = 'noaa'"
-        )
-        repository.connection.commit()
-    _register_forecast_asset(
-        database,
-        tmp_path,
-        path=old_path,
-        asset_id=old_asset_id,
-        provider="ecmwf",
-        cycle_time="2026-03-11T18:00:00Z",
-    )
-    _register_forecast_asset(
-        database,
-        tmp_path,
-        path=latest_path,
-        asset_id=latest_asset_id,
-        provider="ecmwf",
-        cycle_time="2026-03-12T00:00:00Z",
-    )
-    _register_forecast_asset(
-        database,
-        tmp_path,
-        path=unavailable_path,
-        asset_id=unavailable_asset_id,
-        provider="ecmwf",
-        cycle_time="2026-03-12T06:00:00Z",
-        valid_to="2026-03-12T03:00:00Z",
-    )
-    with HistoryRepository(database) as repository:
-        repository.replace_forecast_manual_edits(
-            old_asset_id,
-            [{"t0_step": 0, "t1_step": 3, "reason": "old correction"}],
-        )
-        repository.replace_forecast_manual_edits(
-            latest_asset_id,
-            [
-                {"t0_step": 0, "t1_step": 3, "reason": "first correction"},
-                {"t0_step": 3, "t1_step": 6, "reason": "second correction"},
-            ],
-        )
-
-    scenarios = derive_forecast_scenarios(
-        database,
-        tmp_path,
-        required_start=datetime(2026, 3, 12),
-        required_end=datetime(2026, 3, 12, 6),
-    )
-
-    assert [scenario.kind for scenario in scenarios] == [
-        "zero",
-        "raw",
-        "corrected",
-        "corrected",
-    ]
-    assert {scenario.asset_id for scenario in scenarios[1:]} == {latest_asset_id}
-
-
-def test_scenario_derivation_fails_when_provider_has_no_usable_asset(
-    tmp_path: Path,
-) -> None:
-    database = _history(tmp_path)
-
-    with pytest.raises(RuntimeError, match="on-disk forecast asset"):
-        derive_forecast_scenarios(
-            database,
-            tmp_path,
-            required_start=datetime(2026, 3, 12),
-            required_end=datetime(2026, 3, 12, 6),
-        )
-
-
+    ))
+    scenarios = derive_forecast_scenarios(database)
+    assert [scenario.kind for scenario in scenarios] == ["zero", "raw", "corrected"]
+    assert scenarios[-1].asset_id == "asset"
+    assert scenarios[-1].corrections[0].multiplication_factor == 2
 def _write_scenario_output(
     path: Path,
     scenario: ForecastScenario,

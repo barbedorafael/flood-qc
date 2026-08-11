@@ -1,17 +1,20 @@
+"""Forecast scenarios resolved into, and read from, current-run artifacts."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping, Any
 
 import pandas as pd
 
 from mgb_ops.adapters import get_forecast_adapter
-from mgb_ops.analysis.forecast import forecast_interval_boundaries
+from mgb_ops.assets.current_run import (
+    CurrentRunArtifact, ForecastScenarioReference, create_current_artifact,
+    load_current_artifact,
+)
 from mgb_ops.assets.forecast_registry import list_forecast_assets
-from mgb_ops.assets.history import HistoryRepository
-from mgb_ops.edit.forcing import ForecastCorrectionInstruction, validate_instruction
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
 ScenarioKind = Literal["zero", "raw", "corrected"]
@@ -27,13 +30,12 @@ class ForecastScenario:
     asset_path: Path | None = None
     correction_id: int | None = None
     correction: ForecastCorrectionInstruction | None = None
+    corrections: tuple[ForecastCorrectionInstruction, ...] = ()
 
 
 def _utc_naive(value: datetime | pd.Timestamp | str) -> pd.Timestamp:
     timestamp = pd.Timestamp(value)
-    if timestamp.tzinfo is not None:
-        return timestamp.tz_convert("UTC").tz_localize(None)
-    return timestamp
+    return timestamp.tz_convert("UTC").tz_localize(None) if timestamp.tzinfo else timestamp
 
 
 def _parse_cycle(value: object) -> pd.Timestamp | None:
@@ -45,126 +47,95 @@ def _parse_cycle(value: object) -> pd.Timestamp | None:
         return None
 
 
-def _instruction(row: dict[str, object]) -> ForecastCorrectionInstruction:
-    return validate_instruction(
-        ForecastCorrectionInstruction(
-            asset_id=str(row["asset_id"]),
-            t0_step=int(row["t0_step"]),
-            t1_step=int(row["t1_step"]),
-            shift_lat=float(row["shift_lat"]),
-            shift_lon=float(row["shift_lon"]),
-            rotation_deg=float(row["rotation_deg"]),
-            multiplication_factor=float(row["multiplication_factor"]),
-            editor=str(row["editor"]) if row.get("editor") else None,
-            reason=str(row.get("reason") or ""),
-        )
-    )
-
-
-def derive_forecast_scenarios(
-    database_path: Path,
+def resolve_forecast_scenario_references(
+    history_database_path: Path,
     workspace_path: Path,
     *,
     required_start: datetime,
     required_end: datetime,
-) -> tuple[ForecastScenario, ...]:
-    """Derive scenarios from each provider's newest usable forecast cycle."""
-    enabled = list_enabled_forecast_providers(database_path)
+) -> tuple[ForecastScenarioReference, ...]:
+    """Resolve raw and zero scenarios once, while constructing an artifact."""
+    enabled = list_enabled_forecast_providers(history_database_path)
     for provider in enabled:
         get_forecast_adapter(provider)
-
     start, end = _utc_naive(required_start), _utc_naive(required_end)
-    assets = list_forecast_assets(database_path, workspace_path=workspace_path)
-    eligible_by_provider: dict[str, list[dict[str, object]]] = {
-        provider: [] for provider in enabled
-    }
-    for row in assets.to_dict("records"):
-        provider = str(row.get("provider_code") or "").strip().lower()
-        cycle = _parse_cycle(row.get("cycle_time"))
-        if provider not in eligible_by_provider or cycle is None:
+    eligible: dict[str, list[dict[str, object]]] = {provider: [] for provider in enabled}
+    for row in list_forecast_assets(history_database_path, workspace_path=workspace_path).to_dict("records"):
+        provider, cycle = str(row.get("provider_code") or "").strip().lower(), _parse_cycle(row.get("cycle_time"))
+        if provider not in eligible or cycle is None:
             continue
-        valid_from, valid_to = (
-            _utc_naive(row["valid_from"]),
-            _utc_naive(row["valid_to"]),
-        )
-        if valid_from > start or valid_to < end:
-            continue
-        path = Path(row["asset_path"])
-        if not path.is_file():
-            continue
-        eligible_by_provider[provider].append(row)
-
-    missing_providers = sorted(
-        provider for provider, rows in eligible_by_provider.items() if not rows
-    )
-    if missing_providers:
-        raise RuntimeError(
-            "No registered, on-disk forecast asset covers the runtime window for enabled "
-            f"providers: {missing_providers}."
-        )
-
+        if _utc_naive(row["valid_from"]) <= start and _utc_naive(row["valid_to"]) >= end and Path(row["asset_path"]).is_file():
+            eligible[provider].append(row)
+    missing = sorted(provider for provider, rows in eligible.items() if not rows)
+    if missing:
+        raise RuntimeError(f"No registered, on-disk forecast asset covers the runtime window for enabled providers: {missing}.")
     selected: list[dict[str, object]] = []
-    for provider, rows in eligible_by_provider.items():
-        latest_cycle = max(_parse_cycle(row["cycle_time"]) for row in rows)
-        latest_rows = [
-            row for row in rows if _parse_cycle(row["cycle_time"]) == latest_cycle
-        ]
-        if len(latest_rows) != 1:
-            asset_ids = sorted(str(row["asset_id"]) for row in latest_rows)
-            raise RuntimeError(
-                f"Multiple forecast assets were registered for provider {provider!r} "
-                f"and latest cycle {latest_cycle.isoformat()}: {asset_ids}."
-            )
-        selected.append(latest_rows[0])
+    for provider, rows in eligible.items():
+        latest = max(_parse_cycle(row["cycle_time"]) for row in rows)
+        matches = [row for row in rows if _parse_cycle(row["cycle_time"]) == latest]
+        if len(matches) != 1:
+            raise RuntimeError(f"Multiple forecast assets for provider {provider!r} and cycle {latest.isoformat()}.")
+        selected.append(matches[0])
+    refs = [ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon")]
+    for position, row in enumerate(sorted(selected, key=lambda x: (str(x["provider_code"]), str(x["asset_id"]))), start=1):
+        asset_id, provider = str(row["asset_id"]), str(row["provider_code"])
+        refs.append(ForecastScenarioReference(
+            scenario_id=f"raw:{asset_id}", position=position, kind="raw",
+            label=f"{provider.upper()} raw - {asset_id}", provider_code=provider,
+            source_asset_id=asset_id, source_asset_path=str(row["asset_path"]),
+        ))
+    return tuple(refs)
 
-    scenarios: list[ForecastScenario] = [
-        ForecastScenario("zero", "Zero-rain horizon", "zero")
-    ]
-    with HistoryRepository(Path(database_path)) as repository:
-        for row in sorted(
-            selected,
-            key=lambda item: (str(item["provider_code"]), str(item["asset_id"])),
-        ):
-            asset_id = str(row["asset_id"])
-            provider = str(row["provider_code"])
-            asset_path = Path(row["asset_path"])
-            scenarios.append(
-                ForecastScenario(
-                    scenario_id=f"raw:{asset_id}",
-                    label=f"{provider.upper()} raw - {asset_id}",
-                    kind="raw",
-                    provider_code=provider,
-                    asset_id=asset_id,
-                    asset_path=asset_path,
-                )
-            )
-            boundaries = forecast_interval_boundaries(asset_path)
-            valid_steps = set(boundaries["start_step_hours"].astype(int))
-            valid_steps.update(boundaries["end_step_hours"].astype(int))
-            for edit in repository.list_forecast_manual_edits(asset_id):
-                instruction = _instruction(edit)
-                if instruction.t1_step <= instruction.t0_step:
-                    raise ValueError(
-                        f"Correction {edit['manual_edit_id']} must satisfy t0_step < t1_step."
-                    )
-                if (
-                    instruction.t0_step not in valid_steps
-                    or instruction.t1_step not in valid_steps
-                ):
-                    raise ValueError(
-                        f"Correction {edit['manual_edit_id']} boundaries do not align with asset {asset_id}."
-                    )
-                correction_id = int(edit["manual_edit_id"])
-                scenarios.append(
-                    ForecastScenario(
-                        scenario_id=f"corrected:{asset_id}:{correction_id}",
-                        label=f"{provider.upper()} corrected #{correction_id} - {asset_id}",
-                        kind="corrected",
-                        provider_code=provider,
-                        asset_id=asset_id,
-                        asset_path=asset_path,
-                        correction_id=correction_id,
-                        correction=instruction,
-                    )
-                )
-    return tuple(scenarios)
+
+def build_current_artifact(
+    database_path: Path,
+    history_database_path: Path,
+    workspace_path: Path,
+    *,
+    reference_time: datetime | str,
+    window_start: datetime | str,
+    forecast_end_exclusive: datetime | str,
+    timestep_hours: int,
+    mgb_settings: Mapping[str, Any],
+    spatial_settings: Mapping[str, Any],
+    interpolation_settings: Mapping[str, Any],
+    review_window: Mapping[str, Any],
+    observed_providers: tuple[str, ...] | list[str],
+    responsible_person: str | None = None,
+    reason: str | None = None,
+) -> CurrentRunArtifact:
+    refs = resolve_forecast_scenario_references(history_database_path, workspace_path, required_start=pd.Timestamp(reference_time).to_pydatetime(), required_end=pd.Timestamp(forecast_end_exclusive).to_pydatetime())
+    return create_current_artifact(database_path, CurrentRunArtifact(
+        reference_time=str(reference_time), window_start=str(window_start), forecast_end_exclusive=str(forecast_end_exclusive),
+        timestep_hours=int(timestep_hours), mgb_settings=dict(mgb_settings), spatial_settings=dict(spatial_settings),
+        interpolation_settings=dict(interpolation_settings), review_window=dict(review_window),
+        observed_providers=tuple(observed_providers), responsible_person=responsible_person, reason=reason, scenarios=refs,
+    ))
+
+
+def scenarios_from_artifact(artifact: CurrentRunArtifact) -> tuple[ForecastScenario, ...]:
+    output: list[ForecastScenario] = []
+    for reference in artifact.scenarios:
+        corrections = tuple(reference.corrections)
+        output.append(ForecastScenario(
+            scenario_id=reference.scenario_id, label=reference.label, kind=reference.kind, provider_code=reference.provider_code,
+            asset_id=reference.source_asset_id, asset_path=Path(reference.source_asset_path) if reference.source_asset_path else None,
+            correction=corrections[0] if len(corrections) == 1 else None, corrections=corrections,
+        ))
+    return tuple(output)
+
+
+def derive_forecast_scenarios(
+    database_path: Path,
+    workspace_path: Path | None = None,
+    *,
+    required_start: datetime | None = None,
+    required_end: datetime | None = None,
+) -> tuple[ForecastScenario, ...]:
+    """Read the resolved scenario snapshot from ``current_run.sqlite``.
+
+    ``workspace_path`` and window arguments are retained only for a gentle API
+    transition; they are intentionally not consulted to derive fresh state.
+    """
+    del workspace_path, required_start, required_end
+    return scenarios_from_artifact(load_current_artifact(database_path))

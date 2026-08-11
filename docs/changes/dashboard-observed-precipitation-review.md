@@ -65,9 +65,6 @@ updating and running MGB.
 
 ## Notes
 
-- This change depends on `run-artifact-observed-precipitation-qc.md` and should
-  consume its replacement-policy and artifact contracts. A matching observation
-  becomes a dashboard flag only when projected into the UI.
 - Refresh does not download new provider data; it rebuilds MGB inputs, executes
   the current scenario batch against the latest history observations, exports
   outputs, republishes caches, and reloads the dashboard.

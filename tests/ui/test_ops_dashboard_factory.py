@@ -114,8 +114,8 @@ def test_forecast_correction_form_adds_a_draft_row(tmp_path: Path) -> None:
         "Correction column shift",
         "Correction rotation (°)",
         "Correction multiplication factor",
-        "Correction editor",
-        "Correction reason",
+        "Responsible person",
+        "Run reason",
         "Add correction",
     }.issubset(widgets)
 
@@ -125,8 +125,6 @@ def test_forecast_correction_form_adds_a_draft_row(tmp_path: Path) -> None:
     widgets["Correction column shift"].value = -1
     widgets["Correction rotation (°)"].value = 4
     widgets["Correction multiplication factor"].value = 1.25
-    widgets["Correction editor"].value = "operator"
-    widgets["Correction reason"].value = "radar alignment"
     widgets["Add correction"].clicks += 1
 
     assert len(state.forecast_draft) == 1
@@ -137,8 +135,6 @@ def test_forecast_correction_form_adds_a_draft_row(tmp_path: Path) -> None:
     assert row.shift_lon == -1
     assert row.rotation_deg == 4
     assert row.multiplication_factor == 1.25
-    assert row.editor == "operator"
-    assert row.reason == "radar alignment"
 
 
 def test_apply_preview_seeds_correction_form_from_displayed_map(

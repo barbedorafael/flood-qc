@@ -9,7 +9,7 @@ scripts, and data-flow style orchestration.
 
 The repository already provides a functional base for:
 
-- bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/runs/<run_id>.sqlite`;
+- bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/current_run.sqlite`;
 - ingesting ANA observations for `rain`, `level`, and `flow`;
 - ingesting ECMWF source GRIB internally and registering canonical CF-style NetCDF precipitation grids in the history database;
 - preparing metadata and timestep-aligned rainfall inputs for MGB;
@@ -169,15 +169,15 @@ behavior, prefer a reusable library function first.
   Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user.
   Runner code lives in `src/mgb_ops/model/`.
 - `src/mgb_ops/assets/sql/`
-  Explicit schemas for `history.sqlite`, run databases, and model output exports.
+  Explicit schemas for immutable `history.sqlite`, `current_run.sqlite`, and model output exports.
 - `docs/`
   Architecture, data model, operations, and workflows.
 
 ## History Database vs Run Database
 
 - `<workspace>/data/history.sqlite`
-  Stores station metadata, observations, flags, edits, and the run catalog.
-- `<workspace>/data/runs/<run_id>.sqlite`
+  Stores station metadata, preferred observations, providers, and registered forecast assets.
+- `<workspace>/data/current_run.sqlite`
   Stores the closed state of a specific run.
 
 The run schema exists and bootstrap is implemented, but complete operational run

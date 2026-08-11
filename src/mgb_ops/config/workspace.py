@@ -74,6 +74,10 @@ class RuntimePaths:
         return self.source_dir / "registered_floods.csv"
 
     @property
+    def current_run_db(self) -> Path:
+        return self.data_dir / "current_run.sqlite"
+
+    @property
     def logs_dir(self) -> Path:
         return self.workspace / "logs"
 

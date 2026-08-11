@@ -331,3 +331,44 @@ def execute_forecast_scenarios(
         for result in results
     )
     return ScenarioBatchResult(batch_id=batch_id, results=published, cache_dir=cache_dir)
+
+
+def execute_current_artifact(
+    context: RuntimeContext,
+    artifact_path: Path | None = None,
+    *,
+    executable_path: Path | None = None,
+    execution_env: Mapping[str, str] | None = None,
+) -> ScenarioBatchResult:
+    """Execute one immutable artifact snapshot under a workspace publication lock."""
+    from datetime import timezone
+    import fcntl
+    from mgb_ops.assets.current_run import CurrentExecution, CurrentRunRepository
+    from mgb_ops.workflows.scenarios import scenarios_from_artifact
+
+    path = Path(artifact_path or context.paths.current_run_db)
+    lock_path = context.paths.workspace / ".current_run.publish.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as lock_handle:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("A current artifact execution is already publishing in this workspace.") from exc
+        with CurrentRunRepository(path) as repository:
+            artifact = repository.load()
+            execution_id = uuid4().hex
+            repository.set_execution(CurrentExecution("running", execution_id, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        try:
+            result = execute_forecast_scenarios(
+                context, scenarios_from_artifact(artifact), executable_path=executable_path,
+                observed_provider_codes=artifact.observed_providers,
+                reference_time=datetime.fromisoformat(artifact.reference_time), execution_env=execution_env,
+            )
+        except BaseException as exc:
+            with CurrentRunRepository(path) as repository:
+                repository.set_execution(CurrentExecution("failed", execution_id, None, datetime.now(timezone.utc).isoformat(timespec="seconds"), str(exc)))
+            raise
+        caches = {item.scenario.scenario_id: str(item.cache_path.relative_to(context.paths.workspace)) for item in result.results}
+        with CurrentRunRepository(path) as repository:
+            repository.set_execution(CurrentExecution("completed", execution_id, None, datetime.now(timezone.utc).isoformat(timespec="seconds")), caches=caches)
+        return result

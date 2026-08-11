@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -46,7 +45,8 @@ from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.config.workspace import resolve_workspace_path
 from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.model.prepare_mgb_rainfall import MGB_OBSERVED_CACHE_FILENAME
-from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
+from mgb_ops.assets.current_run import CurrentRunArtifact, ForecastScenarioReference, create_current_artifact, load_current_artifact, update_current_artifact
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
 
@@ -749,79 +749,57 @@ class DashboardState(param.Parameterized):
         )
 
     def load_forecast_draft(self) -> pd.DataFrame:
-        if not self.forecast_asset_id:
+        if not self.forecast_asset_id or not self.context.paths.current_run_db.exists():
             self.forecast_draft = empty_forecast_edit_frame()
             return self.forecast_draft
-        rows = list_forecast_corrections(
-            self.history_path, self.forecast_asset_id
-        )
-        frame = pd.DataFrame(rows)
-        if not frame.empty:
-            frame["asset_id"] = self.forecast_asset_id
-            frame["remove"] = False
-        self.forecast_draft = normalize_forecast_edit_frame(frame)
+        artifact = load_current_artifact(self.context.paths.current_run_db)
+        rows = []
+        for scenario in artifact.scenarios:
+            if scenario.source_asset_id == self.forecast_asset_id and scenario.kind == "corrected":
+                for index, correction in enumerate(scenario.corrections):
+                    rows.append({"correction_id": index + 1, "asset_id": self.forecast_asset_id, "t0_step": correction.t0_step, "t1_step": correction.t1_step, "shift_lat": correction.shift_lat, "shift_lon": correction.shift_lon, "rotation_deg": correction.rotation_deg, "multiplication_factor": correction.multiplication_factor, "metadata_json": "{}", "remove": False})
+        self.forecast_draft = normalize_forecast_edit_frame(pd.DataFrame(rows))
         return self.forecast_draft
 
     def update_forecast_draft(self, frame: pd.DataFrame) -> None:
         draft = normalize_forecast_edit_frame(frame)
-        if self.forecast_asset_id:
-            draft["asset_id"] = self.forecast_asset_id
+        if self.forecast_asset_id: draft["asset_id"] = self.forecast_asset_id
         self.forecast_draft = draft
 
     def add_forecast_correction(self, **values: Any) -> None:
-        if not self.forecast_asset_id:
-            raise ValueError("Select a forecast asset first.")
-        row = build_forecast_edit_row(
-            asset_id=self.forecast_asset_id,
-            t0_step=int(values.get("t0_step", self.forecast_t0_step)),
-            t1_step=int(values.get("t1_step", self.forecast_t1_step)),
-            shift_lat=float(values.get("shift_lat", self.forecast_shift_lat)),
-            shift_lon=float(values.get("shift_lon", self.forecast_shift_lon)),
-            rotation_deg=float(
-                values.get("rotation_deg", self.forecast_rotation_deg)
-            ),
-            multiplication_factor=float(
-                values.get(
-                    "multiplication_factor",
-                    self.forecast_multiplication_factor,
-                )
-            ),
-            editor=str(values.get("editor", "")),
-            reason=str(values.get("reason", "")),
-            metadata=values.get("metadata"),
-        )
-        next_draft = pd.concat(
-            [self.forecast_draft, pd.DataFrame([row])], ignore_index=True
-        )
-        self.update_forecast_draft(next_draft)
-        self.set_message("Correction added to draft.", "success")
+        if not self.forecast_asset_id: raise ValueError("Select a forecast asset first.")
+        row = build_forecast_edit_row(asset_id=self.forecast_asset_id, t0_step=int(values.get("t0_step", self.forecast_t0_step)), t1_step=int(values.get("t1_step", self.forecast_t1_step)), shift_lat=float(values.get("shift_lat", self.forecast_shift_lat)), shift_lon=float(values.get("shift_lon", self.forecast_shift_lon)), rotation_deg=float(values.get("rotation_deg", self.forecast_rotation_deg)), multiplication_factor=float(values.get("multiplication_factor", self.forecast_multiplication_factor)), metadata=values.get("metadata"))
+        self.update_forecast_draft(pd.concat([self.forecast_draft, pd.DataFrame([row])], ignore_index=True))
+        self.set_message("Correction added to artifact draft.", "success")
 
-    def save_forecast_corrections(self) -> list[dict[str, Any]]:
-        if not self.forecast_asset_id:
-            raise ValueError("Select a forecast asset first.")
+    def _dashboard_artifact(self) -> CurrentRunArtifact:
+        path = self.context.paths.current_run_db
+        if path.exists(): return load_current_artifact(path)
+        refs = [ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon")]
+        for position, row in enumerate(self.forecast_assets.itertuples(), 1):
+            refs.append(ForecastScenarioReference(f"raw:{row.asset_id}", position, "raw", f"{row.provider_code.upper()} raw - {row.asset_id}", str(row.provider_code), str(row.asset_id), str(row.asset_path)))
+        observed = ("ana", "inmet")
+        return create_current_artifact(path, CurrentRunArtifact(self._runtime_reference_time.isoformat(timespec="seconds"), self.window.start_time.isoformat(timespec="seconds"), self.window.forecast_end_exclusive.isoformat(timespec="seconds"), int(self.context.settings["run"]["timestep_hours"]), dict(self.context.settings["mgb"]), dict(self.context.settings["spatial_grid"]), dict(self.context.settings["rainfall_interpolation"]), {"start": self.window.start_time.isoformat(), "end": self.window.cutoff_time.isoformat()}, observed, scenarios=tuple(refs)))
+
+    def save_forecast_corrections(self, *, responsible_person: str = "", reason: str = "") -> list[dict[str, Any]]:
+        if not self.forecast_asset_id: raise ValueError("Select a forecast asset first.")
         try:
-            rows = validate_forecast_edit_draft(
-                self.forecast_asset_id, self.forecast_draft
-            )
-            persisted = replace_forecast_corrections(
-                self.history_path, self.forecast_asset_id, rows
-            )
+            rows = validate_forecast_edit_draft(self.forecast_asset_id, self.forecast_draft)
+            artifact = self._dashboard_artifact()
+            scenarios = [item for item in artifact.scenarios if not (item.kind == "corrected" and item.source_asset_id == self.forecast_asset_id)]
+            corrections = tuple(ForecastCorrectionInstruction(asset_id=self.forecast_asset_id, t0_step=row["t0_step"], t1_step=row["t1_step"], shift_lat=row["shift_lat"], shift_lon=row["shift_lon"], rotation_deg=row["rotation_deg"], multiplication_factor=row["multiplication_factor"]) for row in rows)
+            if corrections:
+                source = next((item for item in scenarios if item.source_asset_id == self.forecast_asset_id), None)
+                if source is None: raise ValueError("Selected asset is not a resolved artifact scenario.")
+                scenarios.append(ForecastScenarioReference(f"corrected:{self.forecast_asset_id}", len(scenarios), "corrected", f"{source.provider_code.upper()} corrected - {self.forecast_asset_id}", source.provider_code, source.source_asset_id, source.source_asset_path, corrections))
+            artifact = replace(artifact, scenarios=tuple(replace(item, position=index) for index, item in enumerate(scenarios)), responsible_person=responsible_person.strip() or None, reason=reason.strip() or None)
+            update_current_artifact(self.context.paths.current_run_db, artifact, require_reason=True)
         except ValueError as exc:
             self.set_message(str(exc), "warning")
             raise
-        except sqlite3.IntegrityError as exc:
-            self.set_message(f"Database conflict: {exc}", "danger")
-            raise
-        self.forecast_draft = normalize_forecast_edit_frame(
-            pd.DataFrame(persisted)
-        )
-        if not self.forecast_draft.empty:
-            self.forecast_draft["asset_id"] = self.forecast_asset_id
-            self.forecast_draft["remove"] = False
-        self.set_message(
-            "Corrections persisted to history.sqlite.", "success"
-        )
-        return persisted
+        self.load_forecast_draft()
+        self.set_message("Corrections persisted to current_run.sqlite.", "success")
+        return rows
 
     def set_message(self, text: str, kind: str = "info") -> None:
         self.message = text

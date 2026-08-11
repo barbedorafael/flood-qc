@@ -170,8 +170,8 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     correction_factor = pn.widgets.FloatInput(
         name="Correction multiplication factor", value=1, step=0.05, start=0.01
     )
-    editor = pn.widgets.TextInput(name="Correction editor")
-    reason = pn.widgets.TextInput(name="Correction reason")
+    responsible_person = pn.widgets.TextInput(name="Responsible person")
+    run_reason = pn.widgets.TextInput(name="Run reason")
     add_button = pn.widgets.Button(name="Add correction", button_type="light")
     save_button = pn.widgets.Button(
         name="Save changes", button_type="primary", icon="device-floppy"
@@ -191,8 +191,8 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
                 shift_lon=correction_shift_lon.value,
                 rotation_deg=correction_rotation.value,
                 multiplication_factor=correction_factor.value,
-                editor=editor.value,
-                reason=reason.value,
+
+
             )
             table.value = controller.forecast_draft.copy()
             show_controller_message()
@@ -204,7 +204,7 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     def save_rows(_: Any) -> None:
         controller.update_forecast_draft(table.value)
         try:
-            controller.save_forecast_corrections()
+            controller.save_forecast_corrections(responsible_person=responsible_person.value, reason=run_reason.value)
             table.value = controller.forecast_draft.copy()
         except (ValueError, sqlite3.IntegrityError) as exc:
             # The controller records the more useful validation/database message.
@@ -257,7 +257,8 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
             correction_factor,
             sizing_mode="stretch_width",
         ),
-        pn.Row(editor, reason, add_button, sizing_mode="stretch_width"),
+        pn.Row(add_button, sizing_mode="stretch_width"),
+        pn.Row(responsible_person, run_reason, sizing_mode="stretch_width"),
         table,
         pn.Row(save_button, sizing_mode="stretch_width"),
         title="Forecast Corrections",

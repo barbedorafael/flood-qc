@@ -10,10 +10,9 @@ import pytest
 from apps.ops_dashboard import state as dashboard_state
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from apps.ops_dashboard.services import deckgl as dashboard_map
+from mgb_ops.assets.current_run import CurrentRunArtifact, ForecastScenarioReference, create_current_artifact, load_current_artifact
 from db_helpers import initialize_history_db
 from mgb_ops.assets.spatial_grid import PrecipitationGrid
-from mgb_ops.edit.sqlite import list_forecast_corrections
-from mgb_ops.assets.history import HistoryRepository
 
 
 def _write_config(workspace: Path) -> None:
@@ -185,41 +184,26 @@ def test_state_applies_preview_parameters(tmp_path: Path, monkeypatch) -> None:
 def test_state_draft_validation_failure_sets_status(tmp_path: Path) -> None:
     state = dashboard_state.DashboardState(tmp_path)
     state.forecast_asset_id = "asset"
-    state.add_forecast_correction(reason="")
-
-    with pytest.raises(ValueError, match="reason is required"):
-        state.save_forecast_corrections()
-
+    state.add_forecast_correction(t0_step=0, t1_step=0)
+    with pytest.raises(ValueError, match="correction window"):
+        state.save_forecast_corrections(responsible_person="operator", reason="review")
     assert state.message_kind == "warning"
 
 
-def test_state_persists_transactional_replacement(tmp_path: Path) -> None:
-    db_path = initialize_history_db(tmp_path / "data" / "history.sqlite")
-    with HistoryRepository(db_path) as repository:
-        repository.upsert_asset(
-            asset_id="asset",
-            asset_kind="forecast_precipitation_grid",
-            format="NetCDF",
-            relative_path="forecast.nc",
-            provider_code="ecmwf",
-        )
+def test_state_persists_artifact_backed_replacement(tmp_path: Path) -> None:
+    path = tmp_path / "data" / "current_run.sqlite"
+    create_current_artifact(path, CurrentRunArtifact("2026-03-12T00:00:00", "2026-03-01T00:00:00", "2026-03-26T00:00:00", 1, {}, {}, {}, {}, ("ana",), scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero"), ForecastScenarioReference("raw:asset", 1, "raw", "Raw", "ecmwf", "asset", "forecast.nc"))))
     state = dashboard_state.DashboardState(tmp_path)
     state.forecast_asset_id = "asset"
     state.forecast_draft = dashboard_state.empty_forecast_edit_frame()
-    state.add_forecast_correction(
-        t0_step=0,
-        t1_step=3,
-        multiplication_factor=1.2,
-        editor="operator",
-        reason="radar alignment",
-    )
-
-    persisted = state.save_forecast_corrections()
-
+    state.add_forecast_correction(t0_step=0, t1_step=3, multiplication_factor=1.2)
+    persisted = state.save_forecast_corrections(responsible_person="operator", reason="radar alignment")
+    artifact = load_current_artifact(path)
+    corrected = next(item for item in artifact.scenarios if item.kind == "corrected")
     assert len(persisted) == 1
-    assert list_forecast_corrections(db_path, "asset")[0]["reason"] == "radar alignment"
+    assert corrected.corrections[0].multiplication_factor == 1.2
+    assert artifact.reason == "radar alignment"
     assert state.message_kind == "success"
-
 
 def test_custom_rainfall_hours_apply_and_refresh(tmp_path: Path, monkeypatch) -> None:
     _write_config(tmp_path)

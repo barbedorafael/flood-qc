@@ -32,6 +32,7 @@ from mgb_ops.workflows.scenario_orchestrator import (
     ScenarioBatchResult,
     ScenarioRunResult,
     execute_forecast_scenarios,
+    execute_current_artifact,
 )
 
 __all__ += [
@@ -42,4 +43,5 @@ __all__ += [
     "ScenarioRunResult",
     "derive_forecast_scenarios",
     "execute_forecast_scenarios",
+    "execute_current_artifact",
 ]
