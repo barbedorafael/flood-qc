@@ -1,0 +1,7 @@
+interface:
+  display_name: "Lightweight SDD"
+  short_description: "Guide lightweight spec-driven changes"
+  default_prompt: "Use $sdd to guide this change with a concise, temporary working specification."
+
+policy:
+  allow_implicit_invocation: false
